@@ -190,20 +190,22 @@ export class DriversService {
       return updated;
     }
 
-    // Seed Colombo demo location if GPS not yet reported so dispatch can find this driver.
-    const lat = driver.location
+    // Dispatch only matches drivers near Sri Lanka pickups (max ~20km).
+    // Emulators often report Google HQ (US) GPS — force Colombo demo seed.
+    const rawLat = driver.location
       ? Number(driver.location.latitude)
       : 6.9344;
-    const lng = driver.location
+    const rawLng = driver.location
       ? Number(driver.location.longitude)
       : 79.8428;
+    const inLk = this.isInSriLanka(rawLat, rawLng);
+    const lat = inLk ? rawLat : 6.9344;
+    const lng = inLk ? rawLng : 79.8428;
 
     await this.prisma.driverLocation.upsert({
       where: { driverId: driver.id },
       create: { driverId: driver.id, latitude: lat, longitude: lng },
-      update: driver.location
-        ? {}
-        : { latitude: lat, longitude: lng },
+      update: { latitude: lat, longitude: lng },
     });
     await this.redis.geoAdd(driver.id, lng, lat);
 
@@ -218,18 +220,37 @@ export class DriversService {
     speedMps?: number,
   ) {
     const driver = await this.getDriverByUser(userId);
+
+    // Ignore out-of-market GPS (e.g. emulator default Mountain View) so the
+    // driver stays matchable for Colombo rides.
+    let useLat = lat;
+    let useLng = lng;
+    if (!this.isInSriLanka(lat, lng)) {
+      const prev = driver.location;
+      if (
+        prev &&
+        this.isInSriLanka(Number(prev.latitude), Number(prev.longitude))
+      ) {
+        useLat = Number(prev.latitude);
+        useLng = Number(prev.longitude);
+      } else {
+        useLat = 6.9344;
+        useLng = 79.8428;
+      }
+    }
+
     const location = await this.prisma.driverLocation.upsert({
       where: { driverId: driver.id },
       create: {
         driverId: driver.id,
-        latitude: lat,
-        longitude: lng,
+        latitude: useLat,
+        longitude: useLng,
         heading,
         speedMps,
       },
       update: {
-        latitude: lat,
-        longitude: lng,
+        latitude: useLat,
+        longitude: useLng,
         heading,
         speedMps,
       },
@@ -245,10 +266,15 @@ export class DriversService {
       status === 'ON_TRIP' ||
       status === 'BUSY'
     ) {
-      await this.redis.geoAdd(driver.id, lng, lat);
+      await this.redis.geoAdd(driver.id, useLng, useLat);
     }
 
     return location;
+  }
+
+  /** Sri Lanka rough bounding box for demo dispatch. */
+  private isInSriLanka(lat: number, lng: number): boolean {
+    return lat >= 5.8 && lat <= 9.9 && lng >= 79.4 && lng <= 82.1;
   }
 
   async earnings(userId: string) {

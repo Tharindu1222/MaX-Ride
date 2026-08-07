@@ -164,9 +164,32 @@ npm run db:seed
 
 ---
 
-## Out of scope (per blueprint)
+## Google Maps (Flutter)
 
-Production hosting, DNS, multi-region, pooling, scheduled multi-stop, real SMS/FCM/payment gateway (interfaces ready to swap via env).
+### Why the map was blank
+
+Log: `Trying to create a platform view of unregistered type: plugins.flutter.io/google_maps`
+
+Cause (Windows): project on **D:** + Pub cache on **C:** broke Kotlin incremental compile for `google_maps_flutter_android`, so the native plugin never landed in the APK. Hot reload cannot fix that.  
+
+Fix applied: `kotlin.incremental=false` in `apps/*/android/gradle.properties`.
+
+### Setup
+
+```bash
+# 1. Put key in apps/api/.env
+GOOGLE_MAPS_API_KEY=AIza...
+
+# 2. Write Android string resource + iOS secrets
+node scripts/sync-maps-key.cjs
+
+# 3. Full rebuild (required after plugin/native changes)
+cd apps/passenger
+flutter clean
+flutter run
+```
+
+Enable **Maps SDK for Android** for that key in Google Cloud Console.
 
 ---
 
