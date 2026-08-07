@@ -1,0 +1,56 @@
+[
+  {
+    "info": {
+      "name": "MaX Ride API",
+      "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+      {
+        "name": "Health",
+        "request": {
+          "method": "GET",
+          "url": "{{baseUrl}}/health"
+        }
+      },
+      {
+        "name": "Request OTP",
+        "request": {
+          "method": "POST",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"phoneNumber\": \"+94771234567\",\n  \"userType\": \"PASSENGER\"\n}"
+          },
+          "url": "{{baseUrl}}/auth/otp/request"
+        }
+      },
+      {
+        "name": "Verify OTP",
+        "request": {
+          "method": "POST",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"phoneNumber\": \"+94771234567\",\n  \"code\": \"123456\",\n  \"userType\": \"PASSENGER\"\n}"
+          },
+          "url": "{{baseUrl}}/auth/otp/verify"
+        }
+      },
+      {
+        "name": "Admin Login",
+        "request": {
+          "method": "POST",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"phoneNumber\": \"+94770000000\",\n  \"password\": \"admin123\"\n}"
+          },
+          "url": "{{baseUrl}}/auth/admin/login"
+        }
+      }
+    ],
+    "variable": [
+      { "key": "baseUrl", "value": "http://localhost:4000/api/v1" }
+    ]
+  }
+]
