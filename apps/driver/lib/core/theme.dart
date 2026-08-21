@@ -4,6 +4,9 @@ const Color dInk = Color(0xFF12141A);
 const Color dAmber = Color(0xFFFFB020);
 const Color dNavy = Color(0xFF1A2332);
 const Color dFog = Color(0xFFEEF1F6);
+const Color dBlack = Color(0xFF0A0A0A);
+const Color dGreen = Color(0xFF16A34A);
+const Color dWhite = Color(0xFFFFFFFF);
 
 ThemeData buildDriverTheme(TextTheme textTheme) {
   return ThemeData(

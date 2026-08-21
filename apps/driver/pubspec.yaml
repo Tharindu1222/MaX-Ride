@@ -29,3 +29,7 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/images/driver_cabin_welcome.png
+    - assets/images/driver_hero_car.png
+    - assets/images/driver_hero_car_tight.png
