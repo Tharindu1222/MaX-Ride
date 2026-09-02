@@ -38,6 +38,17 @@ function resolveKey() {
       return map.MAPS_API_KEY.trim();
     }
   }
+  for (const app of ['driver', 'passenger']) {
+    const lp = path.join(monorepo, 'apps', app, 'android', 'local.properties');
+    if (!fs.existsSync(lp)) continue;
+    for (const line of fs.readFileSync(lp, 'utf8').split(/\r?\n/)) {
+      const t = line.trim();
+      if (t.startsWith('maps.apiKey=')) {
+        const v = t.slice('maps.apiKey='.length).trim();
+        if (v) return v;
+      }
+    }
+  }
   return '';
 }
 

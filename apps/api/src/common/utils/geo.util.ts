@@ -1,3 +1,8 @@
+/** Sri Lanka bounding box (matches passenger/driver map camera lock). */
+export function isInSriLanka(lat: number, lng: number): boolean {
+  return lat >= 5.8 && lat <= 9.9 && lng >= 79.4 && lng <= 82.1;
+}
+
 /** Haversine distance in meters between two WGS84 points. */
 export function distanceMeters(
   lat1: number,

@@ -52,7 +52,7 @@ const VALID: Record<string, string[]> = {
   TRIP_COMPLETED: ['PAYMENT_PENDING', 'PAYMENT_FAILED'],
   PAYMENT_PENDING: [],
   PAYMENT_FAILED: [],
-  NO_DRIVERS_AVAILABLE: [],
+  NO_DRIVERS_AVAILABLE: ['SEARCHING', 'CANCELLED_BY_PASSENGER', 'CANCELLED_BY_SYSTEM'],
   CANCELLED_BY_PASSENGER: [],
   CANCELLED_BY_DRIVER: [],
   CANCELLED_BY_SYSTEM: [],
@@ -161,6 +161,35 @@ export class RidesService {
       ...ride,
       startPin: pin, // shown once to passenger at request (MVP)
     };
+  }
+
+  async searchAgain(userId: string, rideId: string) {
+    const ride = await this.getRide(userId, rideId);
+    if (
+      !['NO_DRIVERS_AVAILABLE', 'SEARCHING', 'DRIVER_OFFERED'].includes(
+        ride.status,
+      )
+    ) {
+      throw new ConflictException({
+        code: 'RIDE_INVALID_STATE',
+        message: 'Ride is not waiting for a driver',
+      });
+    }
+    if (ride.status === 'NO_DRIVERS_AVAILABLE') {
+      await this.prisma.ride.update({
+        where: { id: rideId },
+        data: { status: 'SEARCHING' },
+      });
+      await this.recordHistory(
+        rideId,
+        'NO_DRIVERS_AVAILABLE',
+        'SEARCHING',
+        userId,
+        'PASSENGER',
+      );
+    }
+    this.dispatch.startDispatch(rideId);
+    return this.getRide(userId, rideId);
   }
 
   async getRide(userId: string, rideId: string) {
@@ -402,6 +431,7 @@ export class RidesService {
         totalCompletedRides: { increment: 1 },
       },
     });
+    await this.dispatch.notifyDriverAvailable(ride.driverId!);
 
     const full = await this.prisma.ride.findUnique({
       where: { id: rideId },
@@ -471,6 +501,7 @@ export class RidesService {
         where: { id: ride.driverId },
         data: { operationalStatus: 'ONLINE' },
       });
+      await this.dispatch.notifyDriverAvailable(ride.driverId);
     }
 
     this.events.emitToPassenger(ride.passenger.userId, 'ride.cancelled', {

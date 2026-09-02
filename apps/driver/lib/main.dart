@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
 import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
+import 'core/dev_env.dart';
 import 'core/theme.dart';
 import 'features/auth/login_screen.dart';
 import 'features/auth/welcome_screen.dart';
@@ -14,21 +15,31 @@ import 'features/earnings/earnings_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  _configureAndroidMaps();
+  GoogleFonts.config.allowRuntimeFetching = false;
+  await initDevEndpoints();
+  await configureAndroidMaps();
   runApp(const ProviderScope(child: MaxRideDriverApp()));
 }
 
-/// Tune Android Google Maps for emulator stability.
-void _configureAndroidMaps() {
-  if (kIsWeb) return;
-  if (defaultTargetPlatform != TargetPlatform.android) return;
+/// Physical devices + Impeller: TextureLayer (not SurfaceView) so map tiles paint.
+/// Emulators keep hybrid SurfaceView — x86/16k images crash in maps_core GL otherwise.
+Future<void> configureAndroidMaps() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
   try {
     final impl = GoogleMapsFlutterPlatform.instance;
-    if (impl is GoogleMapsFlutterAndroid) {
-      // Hybrid composition (SurfaceView) is usually more stable than texture
-      // mode on x86 / 16k emulators that die on maps_core GL init.
-      impl.useAndroidViewSurface = true;
+    if (impl is! GoogleMapsFlutterAndroid) return;
+    final physical = await isPhysicalAndroid();
+    try {
+      // Legacy renderer paints tiles on more Samsung/tablet GPUs; latest is fine on emulators.
+      await impl.initializeWithRenderer(
+        physical ? AndroidMapRenderer.legacy : AndroidMapRenderer.latest,
+      );
+    } catch (_) {
+      try {
+        await impl.initializeWithRenderer(AndroidMapRenderer.latest);
+      } catch (_) {}
     }
+    impl.useAndroidViewSurface = !physical;
   } catch (_) {}
 }
 
@@ -57,7 +68,7 @@ class MaxRideDriverApp extends ConsumerWidget {
     return MaterialApp.router(
       title: 'MaX Ride Driver',
       debugShowCheckedModeBanner: false,
-      theme: buildDriverTheme(GoogleFonts.spaceGroteskTextTheme()),
+      theme: buildDriverTheme(GoogleFonts.plusJakartaSansTextTheme()),
       routerConfig: router,
     );
   }

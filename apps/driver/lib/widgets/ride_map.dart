@@ -1,9 +1,22 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 const LatLng kColomboCenter = LatLng(6.9271, 79.8612);
+
+/// Camera lock for Sri Lanka only (slight ocean padding around the island).
+final LatLngBounds kSriLankaBounds = LatLngBounds(
+  southwest: const LatLng(5.8, 79.4),
+  northeast: const LatLng(9.9, 82.1),
+);
+
+final CameraTargetBounds kSriLankaCameraBounds =
+    CameraTargetBounds(kSriLankaBounds);
+
+/// Zoom 7 fills the island; users cannot zoom out to other countries.
+const MinMaxZoomPreference kSriLankaZoom = MinMaxZoomPreference(7, 21);
 
 bool get mapsSupported {
   if (kIsWeb) return true;
@@ -39,6 +52,43 @@ LatLngBounds boundsFromPoints(List<LatLng> points) {
   );
 }
 
+Future<BitmapDescriptor> bitmapFromEmoji(
+  String emoji, {
+  double size = 40,
+  Color ring = const Color(0xFF1565C0),
+}) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  final tp = TextPainter(
+    text: TextSpan(
+      text: emoji,
+      style: TextStyle(fontSize: size * 0.62, height: 1),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  const pad = 6.0;
+  final w = math.max(tp.width + pad * 2, size);
+  final h = math.max(tp.height + pad * 2, size);
+  final center = Offset(w / 2, h / 2);
+  final radius = math.min(w, h) / 2;
+  canvas.drawCircle(center, radius, Paint()..color = Colors.white);
+  canvas.drawCircle(
+    center,
+    radius,
+    Paint()
+      ..color = ring
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2,
+  );
+  tp.paint(
+    canvas,
+    Offset((w - tp.width) / 2, (h - tp.height) / 2 - 1),
+  );
+  final image = await recorder.endRecording().toImage(w.ceil(), h.ceil());
+  final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+  return BitmapDescriptor.bytes(bytes!.buffer.asUint8List());
+}
+
 /// Driver / navigation map with markers + route polyline + optional follow me.
 class RideMap extends StatefulWidget {
   const RideMap({
@@ -50,7 +100,10 @@ class RideMap extends StatefulWidget {
     this.routePoints = const [],
     this.myLocationEnabled = true,
     this.followDriver = false,
+    this.navigationMode = false,
     this.driverHeading,
+    this.driverEmoji,
+    this.passengerEmoji,
     this.height,
     this.borderRadius = 0,
     this.routeColor = const Color(0xFF1565C0),
@@ -66,7 +119,13 @@ class RideMap extends StatefulWidget {
   final bool myLocationEnabled;
   /// When true, camera gently follows [driver] on updates.
   final bool followDriver;
+  /// Turn-by-turn style camera (zoom + heading). Follows even with a route drawn.
+  final bool navigationMode;
   final double? driverHeading;
+  /// Vehicle emoji for the live driver pin (e.g. 🚗 🛺 🚐).
+  final String? driverEmoji;
+  /// Person emoji at pickup (e.g. 🧍).
+  final String? passengerEmoji;
   final double? height;
   final double borderRadius;
   final Color routeColor;
@@ -79,6 +138,55 @@ class RideMap extends StatefulWidget {
 
 class _RideMapState extends State<RideMap> {
   GoogleMapController? _controller;
+  bool _programmaticCamera = false;
+  BitmapDescriptor? _vehicleIcon;
+  String? _vehicleEmoji;
+  BitmapDescriptor? _passengerIcon;
+  String? _loadedPassengerEmoji;
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureIcons();
+  }
+
+  Future<void> _ensureIcons() async {
+    try {
+      final vehicle = widget.driverEmoji ?? '🚗';
+      if (vehicle != _vehicleEmoji) {
+        final icon = await bitmapFromEmoji(
+          vehicle,
+          size: 36,
+          ring: const Color(0xFF1565C0),
+        );
+        if (!mounted) return;
+        setState(() {
+          _vehicleIcon = icon;
+          _vehicleEmoji = vehicle;
+        });
+      }
+      final person = widget.passengerEmoji;
+      if (person != null &&
+          person.isNotEmpty &&
+          person != _loadedPassengerEmoji) {
+        final icon = await bitmapFromEmoji(
+          person,
+          size: 36,
+          ring: const Color(0xFF2E7D32),
+        );
+        if (!mounted) return;
+        setState(() {
+          _passengerIcon = icon;
+          _loadedPassengerEmoji = person;
+        });
+      } else if (person == null && _passengerIcon != null) {
+        setState(() {
+          _passengerIcon = null;
+          _loadedPassengerEmoji = null;
+        });
+      }
+    } catch (_) {}
+  }
 
   Set<Marker> get _markers {
     final set = <Marker>{};
@@ -86,8 +194,15 @@ class _RideMapState extends State<RideMap> {
       set.add(Marker(
         markerId: const MarkerId('pickup'),
         position: widget.pickup!,
-        infoWindow: const InfoWindow(title: 'Passenger pickup'),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+        infoWindow: InfoWindow(
+          title: widget.passengerEmoji != null ? 'Passenger' : 'Passenger pickup',
+        ),
+        icon: _passengerIcon ??
+            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+        anchor: widget.passengerEmoji != null
+            ? const Offset(0.5, 0.5)
+            : const Offset(0.5, 1),
+        zIndexInt: 3,
       ));
     }
     if (widget.dropoff != null) {
@@ -107,8 +222,9 @@ class _RideMapState extends State<RideMap> {
         flat: true,
         anchor: const Offset(0.5, 0.5),
         infoWindow: const InfoWindow(title: 'You (live)'),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        zIndexInt: 3,
+        icon: _vehicleIcon ??
+            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        zIndexInt: 4,
       ));
     }
     if (widget.destination != null &&
@@ -176,21 +292,51 @@ class _RideMapState extends State<RideMap> {
     final c = _controller;
     final d = widget.driver;
     if (c == null || d == null || !widget.followDriver) return;
-    if (widget.routePoints.length >= 2) return;
-    // moveCamera is cheaper / safer than animate on weak emulators
+    _programmaticCamera = true;
     try {
-      await c.moveCamera(CameraUpdate.newLatLng(d));
-    } catch (_) {}
+      if (widget.navigationMode) {
+        await c.moveCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(
+              target: d,
+              zoom: 17.2,
+              tilt: 0,
+              bearing: widget.driverHeading ?? 0,
+            ),
+          ),
+        );
+      } else {
+        await c.moveCamera(CameraUpdate.newLatLng(d));
+      }
+    } catch (_) {
+    } finally {
+      Future.delayed(const Duration(milliseconds: 400), () {
+        _programmaticCamera = false;
+      });
+    }
   }
 
   @override
   void didUpdateWidget(covariant RideMap oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.driverEmoji != widget.driverEmoji ||
+        oldWidget.passengerEmoji != widget.passengerEmoji) {
+      _ensureIcons();
+    }
     final routeChanged =
         oldWidget.routePoints.length != widget.routePoints.length ||
-            oldWidget.destination != widget.destination;
+            oldWidget.destination != widget.destination ||
+            oldWidget.pickup != widget.pickup ||
+            oldWidget.dropoff != widget.dropoff;
     final driverMoved = oldWidget.driver != widget.driver ||
         oldWidget.driverHeading != widget.driverHeading;
+
+    if (widget.navigationMode && widget.followDriver) {
+      if (driverMoved || routeChanged) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _followMe());
+      }
+      return;
+    }
 
     if (routeChanged) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _fitRoute());
@@ -211,27 +357,33 @@ class _RideMapState extends State<RideMap> {
             ),
           )
         : GoogleMap(
+            mapType: MapType.normal,
             initialCameraPosition: _initial,
+            cameraTargetBounds: kSriLankaCameraBounds,
+            minMaxZoomPreference: kSriLankaZoom,
             markers: _markers,
             polylines: _polylines,
             myLocationEnabled: widget.myLocationEnabled,
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
-            compassEnabled: false,
+            compassEnabled: widget.navigationMode,
             mapToolbarEnabled: false,
             trafficEnabled: false, // less GPU load (avoids emulator GL crashes)
             buildingsEnabled: false,
             indoorViewEnabled: false,
             tiltGesturesEnabled: false,
-            onCameraMoveStarted: widget.onCameraMoveStarted,
+            onCameraMoveStarted: () {
+              if (!_programmaticCamera) widget.onCameraMoveStarted?.call();
+            },
             onMapCreated: (c) {
               _controller = c;
               widget.onMapCreated?.call(c);
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (widget.routePoints.length >= 2) {
+                if (widget.navigationMode && widget.followDriver) {
+                  _followMe();
+                } else if (widget.routePoints.length >= 2) {
                   _fitRoute();
                 } else if (widget.driver != null) {
-                  // One-time frame on first create — avoid continuous animate storms
                   c.moveCamera(
                     CameraUpdate.newLatLngZoom(widget.driver!, 15.5),
                   );

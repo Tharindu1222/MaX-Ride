@@ -83,14 +83,14 @@ class WelcomeScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 20),
                   Text(
-                    'Find Your',
+                    'Drive with',
                     style: titleStyle.copyWith(
                       fontSize: 32,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
                   Text(
-                    'Perfect Ride',
+                    'MaX Ride',
                     style: titleStyle.copyWith(
                       fontSize: 40,
                       fontWeight: FontWeight.w800,
@@ -99,7 +99,7 @@ class WelcomeScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Explore a variety of cars and pick the one that suits you.',
+                    'Go online, accept nearby rides, and get paid in LKR.',
                     style: GoogleFonts.inter(
                       color: dWhite.withValues(alpha: 0.82),
                       fontSize: 14,

@@ -31,7 +31,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       });
       setState(() {
         otpSent = true;
-        message = (res['data'] as Map?)?['mockHint']?.toString() ?? 'OTP sent';
+        message = (res['data'] as Map?)?['mockHint']?.toString() ??
+            'Code sent to your phone';
       });
     } catch (e) {
       setState(() => message = e.toString());
@@ -79,66 +80,111 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         ),
         child: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.all(28),
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Spacer(),
+                const Spacer(flex: 2),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: maxLime.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Text(
+                    'Sri Lanka · LKR',
+                    style: TextStyle(
+                      color: maxLime,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 Text(
                   'MaX Ride',
                   style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                        color: maxLime,
+                        color: Colors.white,
                         fontWeight: FontWeight.w800,
-                        letterSpacing: -1,
+                        letterSpacing: -1.4,
+                        height: 1,
                       ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 10),
                 Text(
-                  'Sri Lanka, on your time.\nCash or card · LKR',
+                  'Get a tuk, car, or van in a few taps.',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.85),
+                        color: Colors.white.withValues(alpha: 0.78),
                         height: 1.4,
+                        fontWeight: FontWeight.w500,
                       ),
                 ),
-                const SizedBox(height: 40),
-                TextField(
-                  controller: phoneCtrl,
-                  keyboardType: TextInputType.phone,
-                  style: const TextStyle(color: maxInk),
-                  decoration: const InputDecoration(hintText: 'Mobile number'),
-                ),
-                if (otpSent) ...[
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: otpCtrl,
-                    keyboardType: TextInputType.number,
-                    style: const TextStyle(color: maxInk),
-                    decoration: const InputDecoration(hintText: 'OTP (mock: 123456)'),
+                const SizedBox(height: 36),
+                Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: maxSurface,
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: maxShadowSoft,
                   ),
-                ],
-                if (message != null) ...[
-                  const SizedBox(height: 12),
-                  Text(message!, style: const TextStyle(color: maxLime)),
-                ],
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: loading
-                        ? null
-                        : () => otpSent ? verifyOtp() : requestOtp(),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: maxLime,
-                      foregroundColor: maxInk,
-                    ),
-                    child: Text(loading
-                        ? 'Please wait…'
-                        : otpSent
-                            ? 'Verify & continue'
-                            : 'Send OTP'),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: phoneCtrl,
+                        keyboardType: TextInputType.phone,
+                        style: const TextStyle(
+                          color: maxInk,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'Mobile number',
+                          hintText: '+94 77 123 4567',
+                        ),
+                      ),
+                      if (otpSent) ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: otpCtrl,
+                          keyboardType: TextInputType.number,
+                          style: const TextStyle(
+                            color: maxInk,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          decoration: const InputDecoration(
+                            labelText: 'One-time code',
+                            hintText: '6-digit code',
+                          ),
+                        ),
+                      ],
+                      if (message != null) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          message!,
+                          style: const TextStyle(
+                            color: maxForest,
+                            fontWeight: FontWeight.w600,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      ElevatedButton(
+                        onPressed: loading
+                            ? null
+                            : () => otpSent ? verifyOtp() : requestOtp(),
+                        child: Text(
+                          loading
+                              ? 'Please wait…'
+                              : otpSent
+                                  ? 'Verify & continue'
+                                  : 'Send code',
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const Spacer(),
+                const Spacer(flex: 3),
               ],
             ),
           ),

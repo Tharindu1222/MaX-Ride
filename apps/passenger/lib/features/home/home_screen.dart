@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../core/api_client.dart';
+import '../../core/dev_env.dart';
 import '../../core/theme.dart';
+import '../../widgets/max_ui.dart';
 import '../../widgets/ride_map.dart';
 
 enum PickTarget { pickup, dropoff }
@@ -24,8 +27,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   String? selectedCategoryId;
   String paymentMethod = 'CASH';
   String promo = '';
+  bool promoOpen = false;
   Map<String, dynamic>? estimate;
   bool loading = false;
+  bool estimating = false;
   String? error;
 
   /// Which location the user is currently setting (map pin / search).
@@ -41,10 +46,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool searching = false;
   bool showSearchPanel = false;
   Timer? searchDebounce;
+  Timer? estimateDebounce;
 
   String? searchProvider;
   String? searchWarning;
   bool locating = false;
+  bool _physicalDevice = true;
+  bool _didAutoLocate = false;
 
   LatLng? get pickupLatLng => latLngFrom(pickup?['lat'], pickup?['lng']);
   LatLng? get dropoffLatLng => latLngFrom(dropoff?['lat'], dropoff?['lng']);
@@ -65,11 +73,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     super.initState();
     _loadCategories();
     _preloadPopular();
+    isPhysicalDevice().then((v) {
+      if (mounted) _physicalDevice = v;
+    });
   }
 
   @override
   void dispose() {
     searchDebounce?.cancel();
+    estimateDebounce?.cancel();
     searchCtrl.dispose();
     searchFocus.dispose();
     super.dispose();
@@ -208,6 +220,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       error = null;
     });
     searchFocus.unfocus();
+    _refreshEstimate();
 
     if (p != null) {
       await mapController?.animateCamera(CameraUpdate.newLatLngZoom(p, 15.5));
@@ -228,6 +241,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       estimate = null;
       showSearchPanel = false;
     });
+    _refreshEstimate();
   }
 
   Future<void> _confirmCenterPin() => _applyMapPoint(cameraTarget);
@@ -252,7 +266,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  /// Resolve device GPS with timeouts + permission prompts (works on emulators with mock GPS).
+  LocationSettings _gpsSettings({Duration timeLimit = const Duration(seconds: 15)}) {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return AndroidSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 0,
+        forceLocationManager: !_physicalDevice,
+        timeLimit: timeLimit,
+      );
+    }
+    return LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 0,
+      timeLimit: timeLimit,
+    );
+  }
+
+  /// Fresh GPS first. Last-known is only a fallback.
   Future<Position?> _resolveDevicePosition() async {
     final serviceOn = await Geolocator.isLocationServiceEnabled();
     if (!serviceOn) {
@@ -275,34 +305,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return null;
     }
 
-    // Prefer last fix (fast on emulator after mock location is set)
-    try {
-      final last = await Geolocator.getLastKnownPosition();
-      if (last != null) return last;
-    } catch (_) {}
-
     try {
       return await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 12),
-        ),
+        locationSettings: _gpsSettings(),
       );
     } on TimeoutException {
-      _toast('GPS timeout — set a location on the emulator (⋯ → Location)');
+      try {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null) return last;
+      } catch (_) {}
+      _toast('GPS timeout — move outdoors with Location on');
       return null;
     } catch (e) {
+      try {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null) return last;
+      } catch (_) {}
       _toast('Could not get GPS: $e');
       return null;
     }
   }
 
-  Future<void> _goMyLocation() async {
-    setState(() => locating = true);
+  Future<void> _goMyLocation({bool silent = false}) async {
+    if (!silent) setState(() => locating = true);
     final pos = await _resolveDevicePosition();
     if (!mounted) return;
-    setState(() => locating = false);
+    if (!silent) setState(() => locating = false);
     if (pos == null) return;
+
     final me = LatLng(pos.latitude, pos.longitude);
     setState(() => cameraTarget = me);
     await mapController?.animateCamera(CameraUpdate.newLatLngZoom(me, 16));
@@ -342,15 +372,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       showSearchPanel = false;
     });
     searchFocus.unfocus();
-    _toast('GPS unavailable — pickup set to map center. Set emulator GPS or pan the map.');
+    _toast('GPS unavailable — pan the map to set pickup.');
   }
 
-  Future<void> _estimate() async {
+  Future<void> _refreshEstimate() async {
     if (!canBook) return;
-    setState(() {
-      loading = true;
-      error = null;
-    });
+    setState(() => estimating = true);
     try {
       final api = ref.read(apiClientProvider);
       final res = await api.post('/fares/estimate', {
@@ -361,11 +388,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         'dropoffLng': coordAsDouble(dropoff!['lng']),
         if (promo.isNotEmpty) 'promoCode': promo,
       });
-      setState(() => estimate = Map<String, dynamic>.from(res['data'] as Map));
-    } catch (e) {
-      setState(() => error = e.toString());
-    } finally {
-      setState(() => loading = false);
+      if (!mounted) return;
+      setState(() {
+        estimate = Map<String, dynamic>.from(res['data'] as Map);
+        estimating = false;
+        error = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => estimating = false);
     }
   }
 
@@ -415,24 +446,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  Color get _activeColor => activeTarget == PickTarget.pickup
-      ? const Color(0xFF2E7D32)
-      : const Color(0xFFC62828);
+  Color get _activeColor =>
+      activeTarget == PickTarget.pickup ? maxPickup : maxDropoff;
 
   String get _confirmLabel => activeTarget == PickTarget.pickup
-      ? 'Set pickup at map pin'
-      : 'Set drop-off at map pin';
+      ? 'Set pickup here'
+      : 'Set drop-off here';
+
+  String get _ctaHint {
+    if (pickup == null) return 'Choose pickup';
+    if (dropoff == null) return 'Choose drop-off';
+    return 'Ready to request';
+  }
+
+  String? get _fareLine {
+    final e = estimate;
+    if (e == null) return null;
+    final fare = e['estimatedFare'];
+    final mins = ((e['estimatedDurationSeconds'] as num?) ?? 0) / 60;
+    return 'LKR $fare · ${mins.round()} min';
+  }
 
   @override
   Widget build(BuildContext context) {
     final topPad = MediaQuery.paddingOf(context).top;
+    final sheetMax = MediaQuery.sizeOf(context).height *
+        (showSearchPanel ? 0.28 : 0.40);
 
     return Scaffold(
       resizeToAvoidBottomInset: true,
+      backgroundColor: maxSand,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // —— Map ——
           Positioned.fill(
             child: RideMap(
               pickup: pickupLatLng,
@@ -443,6 +489,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               onMapCreated: (c) {
                 mapController = c;
                 setState(() => mapReady = true);
+                if (!_didAutoLocate) {
+                  _didAutoLocate = true;
+                  _goMyLocation(silent: true);
+                }
               },
               onCameraMove: (pos) => cameraTarget = pos.target,
               onTap: (p) => _applyMapPoint(p),
@@ -453,162 +503,129 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   _applyMapPoint(p, force: PickTarget.dropoff),
             ),
           ),
-
-          // Center crosshair pin
           if (mapReady && !showSearchPanel)
             Align(
-              alignment: const Alignment(0, -0.12),
+              alignment: const Alignment(0, -0.08),
               child: IgnorePointer(
-                child: Icon(Icons.location_on, size: 52, color: _activeColor),
+                child: Icon(
+                  Icons.location_on_rounded,
+                  size: 40,
+                  color: _activeColor,
+                  shadows: const [
+                    Shadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 3)),
+                  ],
+                ),
               ),
             ),
-
-          // —— Top: Pickup / Drop-off + Search ——
           Positioned(
-            left: 12,
-            right: 12,
-            top: topPad + 8,
+            left: 16,
+            right: 16,
+            top: topPad + 6,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Brand + actions
                 Row(
                   children: [
                     Container(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
+                        horizontal: 14,
+                        vertical: 9,
                       ),
                       decoration: BoxDecoration(
                         color: maxForest,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.15),
-                            blurRadius: 8,
-                          ),
-                        ],
+                        borderRadius: BorderRadius.circular(999),
+                        boxShadow: maxShadowFloat,
                       ),
                       child: const Text(
                         'MaX Ride',
                         style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w800,
-                          fontSize: 15,
+                          fontSize: 13,
+                          letterSpacing: 0.2,
                         ),
                       ),
                     ),
                     const Spacer(),
-                    _roundIcon(Icons.history, () => context.push('/history')),
+                    MaxCircleIconButton(
+                      icon: Icons.history_rounded,
+                      tooltip: 'Trip history',
+                      onTap: () => context.push('/history'),
+                    ),
                     const SizedBox(width: 8),
-                    _roundIcon(
-                      Icons.person_outline,
-                      () => context.push('/profile'),
+                    MaxCircleIconButton(
+                      icon: Icons.person_outline_rounded,
+                      tooltip: 'Profile',
+                      onTap: () => context.push('/profile'),
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
-
-                // Location card: two big buttons + search
-                Material(
-                  color: Colors.white,
-                  elevation: 6,
-                  shadowColor: Colors.black26,
-                  borderRadius: BorderRadius.circular(18),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-                    child: Column(
-                      children: [
-                        // Pickup button
-                        _LocationButton(
-                          selected: activeTarget == PickTarget.pickup,
-                          color: const Color(0xFF2E7D32),
-                          icon: Icons.trip_origin,
-                          title: 'Pickup location',
-                          subtitle: pickup?['name']?.toString() ??
-                              'Tap to search or set on map',
-                          detail: pickup?['address']?.toString(),
-                          onTap: () => _openTarget(PickTarget.pickup),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.only(left: 18),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 2,
-                                height: 14,
-                                color: Colors.black12,
-                              ),
-                            ],
+                const SizedBox(height: 12),
+                MaxGlassCard(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+                  child: Column(
+                    children: [
+                      _WhereRow(
+                        selected: activeTarget == PickTarget.pickup,
+                        color: maxPickup,
+                        icon: Icons.radio_button_checked,
+                        label: 'Pickup',
+                        value: pickup?['name']?.toString() ?? 'Current or search',
+                        empty: pickup == null,
+                        onTap: () => _openTarget(PickTarget.pickup),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 13),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Container(
+                            width: 2,
+                            height: 10,
+                            color: maxLine,
                           ),
                         ),
-                        // Drop-off button
-                        _LocationButton(
-                          selected: activeTarget == PickTarget.dropoff,
-                          color: const Color(0xFFC62828),
-                          icon: Icons.flag,
-                          title: 'Drop-off location',
-                          subtitle: dropoff?['name']?.toString() ??
-                              'Tap to search or set on map',
-                          detail: dropoff?['address']?.toString(),
-                          onTap: () => _openTarget(PickTarget.dropoff),
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        // Search field
+                      ),
+                      _WhereRow(
+                        selected: activeTarget == PickTarget.dropoff,
+                        color: maxDropoff,
+                        icon: Icons.flag_rounded,
+                        label: 'Drop-off',
+                        value: dropoff?['name']?.toString() ?? 'Where to?',
+                        empty: dropoff == null,
+                        onTap: () => _openTarget(PickTarget.dropoff),
+                      ),
+                      if (showSearchPanel) ...[
+                        const SizedBox(height: 10),
                         TextField(
                           controller: searchCtrl,
                           focusNode: searchFocus,
-                          onTap: () {
-                            setState(() => showSearchPanel = true);
-                            if (searchResults.isEmpty) _runSearch('');
-                          },
-                          onChanged: (v) {
-                            setState(() => showSearchPanel = true);
-                            _onSearchChanged(v);
-                          },
+                          onChanged: _onSearchChanged,
+                          textInputAction: TextInputAction.search,
                           decoration: InputDecoration(
                             hintText: activeTarget == PickTarget.pickup
-                                ? 'Search pickup place…'
-                                : 'Search drop-off place…',
-                            prefixIcon: Icon(Icons.search, color: _activeColor),
+                                ? 'Search a pickup place'
+                                : 'Search a drop-off place',
+                            prefixIcon: Icon(Icons.search_rounded, color: _activeColor),
                             suffixIcon: searching
                                 ? const Padding(
                                     padding: EdgeInsets.all(12),
                                     child: SizedBox(
                                       width: 18,
                                       height: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
+                                      child: CircularProgressIndicator(strokeWidth: 2),
                                     ),
                                   )
-                                : (searchCtrl.text.isNotEmpty
-                                    ? IconButton(
-                                        icon: const Icon(Icons.clear),
-                                        onPressed: () {
-                                          searchCtrl.clear();
-                                          _runSearch('');
-                                        },
-                                      )
-                                    : null),
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 12,
-                            ),
-                            filled: true,
-                            fillColor: maxSand.withValues(alpha: 0.65),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide.none,
-                            ),
+                                : IconButton(
+                                    tooltip: 'Close search',
+                                    icon: const Icon(Icons.close_rounded),
+                                    onPressed: () {
+                                      setState(() => showSearchPanel = false);
+                                      searchFocus.unfocus();
+                                    },
+                                  ),
                           ),
                         ),
-
-                        if (activeTarget == PickTarget.pickup) ...[
-                          const SizedBox(height: 8),
+                        if (activeTarget == PickTarget.pickup)
                           Align(
                             alignment: Alignment.centerLeft,
                             child: TextButton.icon(
@@ -617,99 +634,76 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                   ? const SizedBox(
                                       width: 16,
                                       height: 16,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
+                                      child: CircularProgressIndicator(strokeWidth: 2),
                                     )
-                                  : const Icon(Icons.my_location, size: 18),
+                                  : const Icon(Icons.my_location_rounded, size: 18),
                               label: Text(
                                 locating
                                     ? 'Getting your location…'
                                     : 'Use my current location',
                               ),
-                              style: TextButton.styleFrom(
-                                foregroundColor: maxForest,
-                                padding: EdgeInsets.zero,
-                              ),
                             ),
                           ),
-                        ],
                       ],
-                    ),
+                    ],
                   ),
                 ),
-
-                // Search results dropdown
                 if (showSearchPanel) ...[
                   const SizedBox(height: 8),
-                  Material(
-                    color: Colors.white,
-                    elevation: 8,
-                    borderRadius: BorderRadius.circular(16),
+                  MaxGlassCard(
+                    padding: EdgeInsets.zero,
                     child: ConstrainedBox(
                       constraints: BoxConstraints(
-                        maxHeight: MediaQuery.sizeOf(context).height * 0.34,
+                        maxHeight: MediaQuery.sizeOf(context).height * 0.32,
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 10, 8, 4),
+                            padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
                             child: Row(
                               children: [
                                 Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        activeTarget == PickTarget.pickup
-                                            ? 'Choose pickup'
-                                            : 'Choose drop-off',
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w800,
-                                          fontSize: 13,
-                                        ),
-                                      ),
-                                      if (searchProvider != null)
-                                        Text(
-                                          searchProvider == 'GOOGLE_PLACES'
-                                              ? 'Google Places results'
-                                              : 'Local suggestions',
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            color: searchProvider ==
-                                                    'GOOGLE_PLACES'
-                                                ? maxForest
-                                                : Colors.black45,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                    ],
+                                  child: Text(
+                                    activeTarget == PickTarget.pickup
+                                        ? 'Choose pickup'
+                                        : 'Choose drop-off',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 14,
+                                    ),
                                   ),
                                 ),
-                                TextButton(
-                                  onPressed: () {
-                                    setState(() => showSearchPanel = false);
-                                    searchFocus.unfocus();
-                                  },
-                                  child: const Text('Close'),
-                                ),
+                                if (searchProvider != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: Text(
+                                      searchProvider == 'GOOGLE_PLACES'
+                                          ? 'Places'
+                                          : 'Local',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: searchProvider == 'GOOGLE_PLACES'
+                                            ? maxForest
+                                            : maxMuted,
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
                           if (searchWarning != null)
                             Padding(
-                              padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                               child: Text(
                                 searchWarning!,
                                 style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.orange,
+                                  fontSize: 12,
+                                  color: Color(0xFFB45309),
                                 ),
                               ),
                             ),
-                          const Divider(height: 1),
                           Expanded(
                             child: searching
                                 ? const Center(
@@ -719,39 +713,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                     ),
                                   )
                                 : searchResults.isEmpty
-                                    ? Center(
+                                    ? const Center(
                                         child: Padding(
-                                          padding: const EdgeInsets.all(20),
+                                          padding: EdgeInsets.all(20),
                                           child: Text(
-                                            'No places found for this search.\n'
-                                            'Enable Places API for your key, or try another query.',
+                                            'No places found. Try another name, or set the pin on the map.',
                                             textAlign: TextAlign.center,
                                             style: TextStyle(
-                                              color: Colors.black54,
-                                              height: 1.35,
+                                              color: maxMuted,
+                                              height: 1.4,
                                             ),
                                           ),
                                         ),
                                       )
                                     : ListView.separated(
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 4,
-                                        ),
+                                        padding: const EdgeInsets.only(bottom: 8),
                                         itemCount: searchResults.length,
                                         separatorBuilder: (_, __) =>
-                                            const Divider(height: 1),
+                                            const Divider(height: 1, indent: 56),
                                         itemBuilder: (_, i) {
                                           final place = searchResults[i];
                                           return ListTile(
-                                            dense: true,
                                             leading: CircleAvatar(
-                                              radius: 16,
+                                              radius: 18,
                                               backgroundColor:
-                                                  _activeColor.withValues(
-                                                alpha: 0.12,
-                                              ),
+                                                  _activeColor.withValues(alpha: 0.12),
                                               child: Icon(
-                                                Icons.place,
+                                                Icons.place_rounded,
                                                 size: 18,
                                                 color: _activeColor,
                                               ),
@@ -760,17 +748,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                               place['name']?.toString() ?? '',
                                               style: const TextStyle(
                                                 fontWeight: FontWeight.w700,
+                                                fontSize: 14,
                                               ),
                                             ),
                                             subtitle: Text(
-                                              place['address']?.toString() ??
-                                                  '',
-                                              maxLines: 2,
+                                              place['address']?.toString() ?? '',
+                                              maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
-                                            ),
-                                            trailing: const Icon(
-                                              Icons.chevron_right,
-                                              size: 20,
                                             ),
                                             onTap: () => _selectPlace(place),
                                           );
@@ -785,232 +769,243 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ],
             ),
           ),
-
-          // Confirm map pin + my location (when not searching)
-          if (!showSearchPanel) ...[
+          if (!showSearchPanel)
             Positioned(
-              left: 16,
               right: 16,
-              bottom: 268,
-              child: Column(
-                children: [
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: FloatingActionButton.small(
-                      heroTag: 'loc',
-                      backgroundColor: Colors.white,
-                      onPressed: _goMyLocation,
-                      child: const Icon(Icons.my_location, color: maxForest),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Material(
-                    color: _activeColor,
-                    borderRadius: BorderRadius.circular(14),
-                    elevation: 4,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(14),
-                      onTap: loading ? null : _confirmCenterPin,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 14,
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.push_pin, color: Colors.white),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                _confirmLabel,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
+              bottom: sheetMax + 72,
+              child: MaxCircleIconButton(
+                icon: Icons.my_location_rounded,
+                tooltip: 'Recenter map',
+                onTap: _goMyLocation,
+              ),
+            ),
+          if (!showSearchPanel)
+            Positioned(
+              left: 72,
+              right: 72,
+              bottom: sheetMax + 18,
+              child: Center(
+                child: Material(
+                  color: _activeColor,
+                  borderRadius: BorderRadius.circular(999),
+                  elevation: 0,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: loading ? null : _confirmCenterPin,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.push_pin_rounded, color: Colors.white, size: 16),
+                          const SizedBox(width: 6),
+                          Text(
+                            _confirmLabel,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13,
                             ),
-                            const Icon(Icons.check_circle_outline,
-                                color: Colors.white70),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                ],
+                ),
               ),
             ),
-          ],
-
-          // —— Bottom booking sheet ——
+          if (!showSearchPanel)
           Align(
             alignment: Alignment.bottomCenter,
-            child: Material(
-              color: maxSand,
-              elevation: 18,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+            child: Container(
+              decoration: const BoxDecoration(
+                color: maxSurface,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                boxShadow: maxShadowSoft,
+              ),
               child: SafeArea(
                 top: false,
                 child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: MediaQuery.sizeOf(context).height * 0.42,
-                  ),
+                  constraints: BoxConstraints(maxHeight: sheetMax),
                   child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                    padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Center(
-                          child: Container(
-                            width: 40,
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: Colors.black26,
-                              borderRadius: BorderRadius.circular(99),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Vehicle',
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w800),
-                        ),
-                        const SizedBox(height: 8),
+                        const MaxSheetHandle(),
+                        const SizedBox(height: 14),
                         SizedBox(
-                          height: 84,
+                          height: 88,
                           child: ListView.separated(
                             scrollDirection: Axis.horizontal,
                             itemCount: categories.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(width: 10),
+                            separatorBuilder: (_, __) => const SizedBox(width: 10),
                             itemBuilder: (_, i) {
                               final c = categories[i] as Map;
                               final selected = c['id'] == selectedCategoryId;
-                              return GestureDetector(
-                                onTap: () => setState(
-                                  () => selectedCategoryId = c['id'] as String,
-                                ),
-                                child: Container(
-                                  width: 110,
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color:
-                                        selected ? maxForest : Colors.white,
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        c['name']?.toString() ?? '',
-                                        style: TextStyle(
-                                          color: selected
-                                              ? Colors.white
-                                              : maxInk,
-                                          fontWeight: FontWeight.w700,
-                                        ),
+                              final code = c['code']?.toString();
+                              return Semantics(
+                                button: true,
+                                selected: selected,
+                                label: '${c['name']}, ${c['capacity']} seats',
+                                child: GestureDetector(
+                                  onTap: () {
+                                    setState(() =>
+                                        selectedCategoryId = c['id'] as String);
+                                    _refreshEstimate();
+                                  },
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 180),
+                                    width: 96,
+                                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+                                    decoration: BoxDecoration(
+                                      color: selected ? maxForest : maxSand,
+                                      borderRadius: BorderRadius.circular(18),
+                                      border: Border.all(
+                                        color: selected
+                                            ? maxForest
+                                            : const Color(0x140B1F1A),
+                                        width: selected ? 1.5 : 1,
                                       ),
-                                      const Spacer(),
-                                      Text(
-                                        '${c['capacity']} seats',
-                                        style: TextStyle(
-                                          color: selected
-                                              ? maxLime
-                                              : Colors.black54,
-                                          fontSize: 12,
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          vehicleEmojiFor(code),
+                                          style: const TextStyle(fontSize: 20),
                                         ),
-                                      ),
-                                    ],
+                                        const Spacer(),
+                                        Text(
+                                          c['name']?.toString() ?? '',
+                                          style: TextStyle(
+                                            color: selected ? Colors.white : maxInk,
+                                            fontWeight: FontWeight.w800,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                        Text(
+                                          '${c['capacity']} seats',
+                                          style: TextStyle(
+                                            color: selected
+                                                ? maxLime
+                                                : maxMuted,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               );
                             },
                           ),
                         ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            ChoiceChip(
-                              label: const Text('Cash (LKR)'),
-                              selected: paymentMethod == 'CASH',
-                              onSelected: (_) =>
-                                  setState(() => paymentMethod = 'CASH'),
-                            ),
-                            const SizedBox(width: 8),
-                            ChoiceChip(
-                              label: const Text('Card'),
-                              selected: paymentMethod == 'CARD',
-                              onSelected: (_) =>
-                                  setState(() => paymentMethod = 'CARD'),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          decoration: const InputDecoration(
-                            hintText: 'Promo code (e.g. MAX10)',
-                            isDense: true,
-                          ),
-                          onChanged: (v) => promo = v,
-                        ),
-                        if (estimate != null) ...[
-                          const SizedBox(height: 10),
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Text(
-                              'Estimate: LKR ${estimate!['estimatedFare']}\n'
-                              '${estimate!['estimatedDistanceMeters']} m · '
-                              '${((estimate!['estimatedDurationSeconds'] as num) / 60).round()} min',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                                height: 1.35,
-                              ),
-                            ),
-                          ),
-                        ],
-                        if (error != null) ...[
-                          const SizedBox(height: 8),
-                          Text(error!,
-                              style: const TextStyle(color: Colors.red)),
-                        ],
-                        if (!canBook) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            pickup == null
-                                ? 'Select a pickup location to continue'
-                                : 'Select a drop-off location to continue',
-                            style: const TextStyle(
-                              color: Colors.black54,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
                         const SizedBox(height: 12),
                         Row(
                           children: [
                             Expanded(
-                              child: OutlinedButton(
-                                onPressed: loading || !canBook
-                                    ? null
-                                    : _estimate,
-                                child: const Text('Estimate'),
+                              child: _PayChip(
+                                label: 'Cash',
+                                selected: paymentMethod == 'CASH',
+                                onTap: () =>
+                                    setState(() => paymentMethod = 'CASH'),
                               ),
                             ),
-                            const SizedBox(width: 12),
+                            const SizedBox(width: 8),
                             Expanded(
-                              child: ElevatedButton(
-                                onPressed: loading || !canBook
-                                    ? null
-                                    : _requestRide,
-                                child: Text(loading ? '…' : 'Request ride'),
+                              child: _PayChip(
+                                label: 'Card',
+                                selected: paymentMethod == 'CARD',
+                                onTap: () =>
+                                    setState(() => paymentMethod = 'CARD'),
                               ),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton(
+                              onPressed: () =>
+                                  setState(() => promoOpen = !promoOpen),
+                              child: Text(promoOpen || promo.isNotEmpty
+                                  ? 'Promo'
+                                  : 'Add promo'),
                             ),
                           ],
+                        ),
+                        if (promoOpen) ...[
+                          const SizedBox(height: 8),
+                          TextField(
+                            decoration: const InputDecoration(
+                              labelText: 'Promo code',
+                              hintText: 'e.g. MAX10',
+                              isDense: true,
+                            ),
+                            onChanged: (v) {
+                              promo = v;
+                              estimateDebounce?.cancel();
+                              estimateDebounce = Timer(
+                                const Duration(milliseconds: 450),
+                                _refreshEstimate,
+                              );
+                            },
+                          ),
+                        ],
+                        if (error != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            error!,
+                            style: const TextStyle(
+                              color: Color(0xFFB42318),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        Semantics(
+                          button: true,
+                          enabled: canBook && !loading,
+                          hint: canBook ? null : _ctaHint,
+                          child: ElevatedButton(
+                            onPressed: !canBook
+                                ? null
+                                : loading
+                                    ? () {}
+                                    : _requestRide,
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                            child: loading
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(canBook ? 'Request ride' : _ctaHint),
+                                      if (canBook &&
+                                          (_fareLine != null || estimating))
+                                        Text(
+                                          estimating
+                                              ? 'Updating fare…'
+                                              : _fareLine!,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.white
+                                                .withValues(alpha: 0.85),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                          ),
                         ),
                       ],
                     ),
@@ -1023,113 +1018,121 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     );
   }
+}
 
-  Widget _roundIcon(IconData icon, VoidCallback onTap) {
+class _WhereRow extends StatelessWidget {
+  const _WhereRow({
+    required this.selected,
+    required this.color,
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.empty,
+    required this.onTap,
+  });
+
+  final bool selected;
+  final Color color;
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool empty;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
     return Material(
-      color: Colors.white,
-      shape: const CircleBorder(),
-      elevation: 3,
+      color: selected ? color.withValues(alpha: 0.08) : Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
       child: InkWell(
-        customBorder: const CircleBorder(),
+        borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Icon(icon, size: 20, color: maxInk),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+          child: Row(
+            children: [
+              Icon(icon, color: color, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: selected ? color : maxMuted,
+                      ),
+                    ),
+                    Text(
+                      value,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                        color: empty ? maxMuted : maxInk,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.search_rounded,
+                size: 18,
+                color: selected ? color : const Color(0x660B1F1A),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _LocationButton extends StatelessWidget {
-  const _LocationButton({
+class _PayChip extends StatelessWidget {
+  const _PayChip({
+    required this.label,
     required this.selected,
-    required this.color,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
     required this.onTap,
-    this.detail,
   });
 
+  final String label;
   final bool selected;
-  final Color color;
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String? detail;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: selected ? color.withValues(alpha: 0.08) : Colors.white,
+      color: selected ? const Color(0x1A0F3D2E) : maxSand,
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          height: 44,
+          alignment: Alignment.center,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: selected ? color : Colors.black12,
-              width: selected ? 2 : 1,
+              color: selected ? maxForest : const Color(0x140B1F1A),
+              width: selected ? 1.6 : 1,
             ),
           ),
           child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.15),
-                  shape: BoxShape.circle,
+              if (selected) ...[
+                const Icon(Icons.check_rounded, size: 16, color: maxForest),
+                const SizedBox(width: 4),
+              ],
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: selected ? maxForest : maxInk,
                 ),
-                child: Icon(icon, color: color, size: 20),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: selected ? color : Colors.black54,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 15,
-                        color: subtitle.startsWith('Tap')
-                            ? Colors.black38
-                            : maxInk,
-                      ),
-                    ),
-                    if (detail != null && detail!.isNotEmpty)
-                      Text(
-                        detail!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: Colors.black45,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              Icon(
-                selected ? Icons.search : Icons.chevron_right,
-                color: selected ? color : Colors.black38,
               ),
             ],
           ),

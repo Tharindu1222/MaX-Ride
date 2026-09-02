@@ -1,39 +1,137 @@
 import 'package:flutter/material.dart';
 
-const Color dInk = Color(0xFF12141A);
-const Color dAmber = Color(0xFFFFB020);
-const Color dNavy = Color(0xFF1A2332);
-const Color dFog = Color(0xFFEEF1F6);
+const Color maxInk = Color(0xFF0B1F1A);
+const Color maxForest = Color(0xFF0F3D2E);
+const Color maxLime = Color(0xFFC8F560);
+const Color maxSand = Color(0xFFF6F3EC);
+const Color maxTeal = Color(0xFF1FA89A);
+const Color maxSurface = Color(0xFFFFFFFF);
+const Color maxMuted = Color(0xFF5C6B66);
+const Color maxLine = Color(0x1A0B1F1A);
+const Color maxPickup = Color(0xFF1B7A4A);
+const Color maxDropoff = Color(0xFFC62828);
+
+const Color dInk = maxInk;
+const Color dAmber = maxLime;
+const Color dNavy = maxForest;
+const Color dFog = maxSand;
 const Color dBlack = Color(0xFF0A0A0A);
-const Color dGreen = Color(0xFF16A34A);
+const Color dGreen = maxLime;
 const Color dWhite = Color(0xFFFFFFFF);
+
+const List<BoxShadow> maxShadowSoft = [
+  BoxShadow(
+    color: Color(0x140B1F1A),
+    blurRadius: 28,
+    offset: Offset(0, 10),
+  ),
+];
+
+const List<BoxShadow> maxShadowFloat = [
+  BoxShadow(
+    color: Color(0x1F0B1F1A),
+    blurRadius: 20,
+    offset: Offset(0, 6),
+  ),
+];
 
 ThemeData buildDriverTheme(TextTheme textTheme) {
   return ThemeData(
     useMaterial3: true,
-    scaffoldBackgroundColor: dFog,
+    brightness: Brightness.light,
+    scaffoldBackgroundColor: maxSand,
     colorScheme: ColorScheme.fromSeed(
-      seedColor: dNavy,
-      primary: dNavy,
-      secondary: dAmber,
+      seedColor: maxForest,
+      primary: maxForest,
+      secondary: maxLime,
+      surface: maxSurface,
+      onPrimary: Colors.white,
+      onSurface: maxInk,
       brightness: Brightness.light,
     ),
-    textTheme: textTheme.apply(bodyColor: dInk, displayColor: dInk),
+    textTheme: textTheme.apply(bodyColor: maxInk, displayColor: maxInk),
+    appBarTheme: const AppBarTheme(
+      backgroundColor: maxSand,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      foregroundColor: maxInk,
+      centerTitle: false,
+      titleTextStyle: TextStyle(
+        color: maxInk,
+        fontWeight: FontWeight.w800,
+        fontSize: 20,
+        letterSpacing: -0.3,
+      ),
+    ),
+    cardTheme: CardThemeData(
+      color: maxSurface,
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: maxInk,
+      contentTextStyle: const TextStyle(
+        color: Colors.white,
+        fontWeight: FontWeight.w600,
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    ),
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.selected)) return maxLime;
+        return Colors.white;
+      }),
+      trackColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.selected)) return maxForest;
+        return const Color(0xFFC9D2CE);
+      }),
+    ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
-        backgroundColor: dNavy,
+        backgroundColor: maxForest,
         foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        disabledBackgroundColor: const Color(0xFFE4EAE7),
+        disabledForegroundColor: maxMuted,
+        elevation: 0,
+        minimumSize: const Size(48, 52),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: maxForest,
+        minimumSize: const Size(48, 52),
+        side: const BorderSide(color: Color(0x330F3D2E)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: maxForest,
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: Colors.white,
+      fillColor: maxSand,
+      hintStyle: const TextStyle(color: maxMuted, fontWeight: FontWeight.w500),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
         borderSide: BorderSide.none,
       ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: BorderSide.none,
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: maxForest, width: 1.4),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
     ),
   );
 }

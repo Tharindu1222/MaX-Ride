@@ -51,6 +51,11 @@ export class RidesController {
     return this.rides.requestRide(user.id, dto);
   }
 
+  @Post(':id/search-again')
+  searchAgain(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.rides.searchAgain(user.id, id);
+  }
+
   @Get(':id')
   get(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.rides.getRide(user.id, id);

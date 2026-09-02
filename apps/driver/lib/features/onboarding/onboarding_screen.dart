@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/api_client.dart';
+import '../../core/theme.dart';
 
 class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key});
@@ -25,6 +26,15 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    nameCtrl.dispose();
+    nicCtrl.dispose();
+    licenseCtrl.dispose();
+    regCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -67,7 +77,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         });
       }
       await api.post('/drivers/me/submit');
-      setState(() => message = 'Submitted for admin approval. Ask admin to Approve this driver.');
+      setState(() =>
+          message = 'Submitted. Ask an admin to approve this driver.');
     } catch (e) {
       setState(() => message = e.toString());
     } finally {
@@ -78,39 +89,76 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Driver onboarding')),
+      appBar: AppBar(title: const Text('Driver profile')),
       body: ListView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
         children: [
-          TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Full name')),
-          TextField(controller: nicCtrl, decoration: const InputDecoration(labelText: 'NIC')),
-          TextField(controller: licenseCtrl, decoration: const InputDecoration(labelText: 'License no.')),
-          TextField(
-            controller: regCtrl,
-            decoration: const InputDecoration(labelText: 'Vehicle registration'),
+          const Text(
+            'Vehicle & documents',
+            style: TextStyle(color: maxMuted, height: 1.4),
           ),
-          const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            initialValue: categoryId,
-            items: categories
-                .map(
-                  (c) => DropdownMenuItem(
-                    value: (c as Map)['id'] as String,
-                    child: Text(c['name']?.toString() ?? ''),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: maxSurface,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: maxShadowFloat,
+            ),
+            child: Column(
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Full name',
+                    hintText: 'Name on your NIC',
                   ),
-                )
-                .toList(),
-            onChanged: (v) => setState(() => categoryId = v),
-            decoration: const InputDecoration(labelText: 'Category'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: nicCtrl,
+                  decoration: const InputDecoration(labelText: 'NIC number'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: licenseCtrl,
+                  decoration: const InputDecoration(labelText: 'License number'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: regCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Vehicle registration',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  initialValue: categoryId,
+                  items: categories
+                      .map(
+                        (c) => DropdownMenuItem(
+                          value: (c as Map)['id'] as String,
+                          child: Text(c['name']?.toString() ?? ''),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (v) => setState(() => categoryId = v),
+                  decoration: const InputDecoration(labelText: 'Vehicle type'),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 20),
           ElevatedButton(
-            onPressed: loading ? null : _submit,
+            onPressed: loading ? () {} : _submit,
             child: Text(loading ? 'Submitting…' : 'Submit application'),
           ),
           if (message != null) ...[
             const SizedBox(height: 12),
-            Text(message!),
+            Text(
+              message!,
+              style: const TextStyle(color: maxForest, height: 1.4),
+            ),
           ],
         ],
       ),

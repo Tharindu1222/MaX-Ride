@@ -47,6 +47,11 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>MaX Ride uses your location to show you on the map and share status with passengers.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>google.navigation</string>
+		<string>comgooglemaps</string>
+	</array>
 	<key>GMSApiKey</key>
 	<string>$(GOOGLE_MAPS_API_KEY)</string>
 </dict>

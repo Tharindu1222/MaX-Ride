@@ -5,22 +5,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../core/api_client.dart';
+import '../../core/dev_env.dart';
 import '../../core/theme.dart';
+import '../../widgets/driver_ui.dart';
 import '../../widgets/ride_map.dart';
-
-/// Colombo Fort — MaX Ride demo zone (matches dispatch seed).
-const LatLng kColomboFort = LatLng(6.9344, 79.8428);
-
-/// Emulators often report Mountain View (US). Only use GPS if inside Sri Lanka.
-bool isInSriLanka(double lat, double lng) {
-  return lat >= 5.8 && lat <= 9.9 && lng >= 79.4 && lng <= 82.1;
-}
-
-LatLng sanitizeDriverLocation(LatLng raw) {
-  if (isInSriLanka(raw.latitude, raw.longitude)) return raw;
-  return kColomboFort;
-}
 
 /// Driver map phases for navigation guidance.
 enum _NavPhase {
@@ -52,17 +42,21 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   Timer? gpsPollTimer;
   DateTime? lastServerPush;
 
-  LatLng driverPos = kColomboFort;
+  LatLng? driverPos;
   double? driverHeading;
   bool gpsLive = false;
-  /// When true, keep map/server on Colombo Fort (ignores emulator US GPS).
-  bool forceColomboDemo = true;
+  /// Real phones/tablets: Fused GPS. Emulators: LocationManager (crash workaround).
+  bool _physicalDevice = true;
   bool followMe = true;
+  bool navigating = false;
   String? locationStatus;
   List<LatLng> routePoints = [];
   String? routeDistanceText;
   String? routeDurationText;
   String? routeProvider;
+  int? routeDistanceMeters;
+  int? routeDurationSeconds;
+  DateTime? lastRerouteAt;
   bool routeLoading = false;
   String? lastRouteKey;
   /// Delay embedding GoogleMap until activity/GL is ready (emulator crash fix).
@@ -91,12 +85,40 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       ? null
       : latLngFrom(activeRide!['dropoffLat'], activeRide!['dropoffLng']);
 
+  String get driverEmoji {
+    String? code;
+    final cat = activeRide?['category'];
+    if (cat is Map) code = cat['code']?.toString();
+    if (code == null || code.isEmpty) {
+      final assignments = me?['assignments'];
+      if (assignments is List && assignments.isNotEmpty) {
+        final first = assignments.first;
+        if (first is Map) {
+          final vehicle = first['vehicle'];
+          if (vehicle is Map) {
+            final vcat = vehicle['category'];
+            if (vcat is Map) code = vcat['code']?.toString();
+          }
+        }
+      }
+    }
+    switch (code?.toUpperCase()) {
+      case 'TUKTUK':
+        return '🛺';
+      case 'VAN':
+        return '🚐';
+      default:
+        return '🚗';
+    }
+  }
+
   /// Navigation target based on trip stage.
+  /// Pickup only until the driver taps "I've arrived"; then drop-off.
   LatLng? get navDestination {
     switch (phase) {
       case _NavPhase.toPickup:
-      case _NavPhase.atPickup:
         return pickupLatLng;
+      case _NavPhase.atPickup:
       case _NavPhase.toDropoff:
         return dropoffLatLng;
       default:
@@ -105,6 +127,12 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   }
 
   String get navTitle {
+    if (navigating && phase == _NavPhase.toPickup) {
+      return 'Live navigation to pickup';
+    }
+    if (navigating && phase == _NavPhase.toDropoff) {
+      return 'Live navigation to drop-off';
+    }
     switch (phase) {
       case _NavPhase.toPickup:
         return 'Navigate to passenger pickup';
@@ -125,7 +153,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     // Do NOT start GPS or GoogleMap on the exact same frame as first paint —
     // concurrent GMS maps_core + LocationManager init kills some emulators.
     _load();
-    pollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _pollOffers());
+    pollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _pollOffers());
+    isPhysicalDevice().then((v) {
+      if (mounted) _physicalDevice = v;
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future.delayed(const Duration(milliseconds: 600), () {
         if (mounted) setState(() => mapMounted = true);
@@ -143,22 +174,26 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     super.dispose();
   }
 
-  /// Avoid Geolocator "Fused" client — it starts NMEA and can hard-crash emulators
-  /// (JNI NewStringUTF / NmeaClient). Use classic LocationManager on Android.
-  LocationSettings _safeLocationSettings({Duration? timeLimit}) {
+  /// Fused GPS on real devices. LocationManager only on emulators (Fused can crash them).
+  LocationSettings _safeLocationSettings({
+    Duration? timeLimit,
+    bool highAccuracy = false,
+  }) {
+    final accuracy =
+        highAccuracy ? LocationAccuracy.high : LocationAccuracy.best;
     if (defaultTargetPlatform == TargetPlatform.android) {
       return AndroidSettings(
-        accuracy: LocationAccuracy.medium,
-        distanceFilter: 5,
-        forceLocationManager: true,
-        intervalDuration: const Duration(seconds: 3),
+        accuracy: accuracy,
+        distanceFilter: 0,
+        forceLocationManager: !_physicalDevice,
+        intervalDuration: const Duration(seconds: 2),
         timeLimit: timeLimit,
         useMSLAltitude: false,
       );
     }
     return LocationSettings(
-      accuracy: LocationAccuracy.medium,
-      distanceFilter: 5,
+      accuracy: accuracy,
+      distanceFilter: 0,
       timeLimit: timeLimit,
     );
   }
@@ -206,7 +241,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       if (mounted) {
         setState(() {
           gpsLive = false;
-          locationStatus ??= 'No GPS — using demo Colombo pin';
+          locationStatus ??= 'Location off — enable GPS';
         });
       }
       return;
@@ -225,16 +260,18 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
 
     // Periodic poll — more stable than getPositionStream on emulators
     gpsPollTimer?.cancel();
-    gpsPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      _pollGpsOnce();
-    });
+    gpsPollTimer = Timer.periodic(
+      Duration(seconds: navigating ? 2 : 5),
+      (_) => _pollGpsOnce(),
+    );
   }
 
   Future<void> _pollGpsOnce() async {
     try {
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: _safeLocationSettings(
-          timeLimit: const Duration(seconds: 8),
+          timeLimit: const Duration(seconds: 12),
+          highAccuracy: true,
         ),
       );
       if (mounted) _applyGpsFix(pos);
@@ -243,40 +280,30 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       if (mounted && !gpsLive) {
         setState(() {
           locationStatus =
-              'Waiting for GPS… Emulator: ⋯ → Location → set pin';
+              'Waiting for GPS… go outdoors and tap locate';
         });
       }
     }
   }
 
   void _applyGpsFix(Position pos) {
-    final raw = LatLng(pos.latitude, pos.longitude);
-    final inLk = isInSriLanka(raw.latitude, raw.longitude);
-
-    // Emulator default is often Google HQ (US) — snaps to Colombo for demo rides.
-    final next = (forceColomboDemo || !inLk) ? kColomboFort : raw;
-
+    final next = LatLng(pos.latitude, pos.longitude);
     if (!mounted) return;
     setState(() {
       driverPos = next;
-      if (inLk &&
-          pos.heading.isFinite &&
-          pos.heading >= 0 &&
-          pos.heading <= 360) {
+      if (pos.heading.isFinite && pos.heading >= 0 && pos.heading <= 360) {
         driverHeading = pos.heading;
       }
-      gpsLive = inLk && !forceColomboDemo;
-      if (forceColomboDemo || !inLk) {
-        locationStatus =
-            'Colombo demo · ${next.latitude.toStringAsFixed(4)}, ${next.longitude.toStringAsFixed(4)}'
-            '${inLk ? '' : ' (GPS was outside Sri Lanka)'}';
-      } else {
-        final acc =
-            pos.accuracy.isFinite ? ' · ±${pos.accuracy.round()}m' : '';
-        locationStatus =
-            'Live · ${next.latitude.toStringAsFixed(5)}, ${next.longitude.toStringAsFixed(5)}$acc';
-      }
+      gpsLive = true;
+      final acc =
+          pos.accuracy.isFinite ? ' · ±${pos.accuracy.round()}m' : '';
+      locationStatus =
+          'Live · ${next.latitude.toStringAsFixed(5)}, ${next.longitude.toStringAsFixed(5)}$acc';
     });
+
+    if (navigating) {
+      _advanceAlongRoute(next);
+    }
 
     if (online ||
         phase == _NavPhase.toPickup ||
@@ -292,47 +319,25 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   }
 
   Future<LatLng?> _readGps() async {
-    if (forceColomboDemo) return kColomboFort;
     try {
-      if (!await _ensureLocationPermission()) return kColomboFort;
+      if (!await _ensureLocationPermission()) return driverPos;
       try {
+        final pos = await Geolocator.getCurrentPosition(
+          locationSettings: _safeLocationSettings(
+            timeLimit: const Duration(seconds: 12),
+            highAccuracy: true,
+          ),
+        );
+        return LatLng(pos.latitude, pos.longitude);
+      } catch (_) {
         final last = await Geolocator.getLastKnownPosition();
         if (last != null) {
-          return sanitizeDriverLocation(
-            LatLng(last.latitude, last.longitude),
-          );
+          return LatLng(last.latitude, last.longitude);
         }
-      } catch (_) {}
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: _safeLocationSettings(
-          timeLimit: const Duration(seconds: 8),
-        ),
-      );
-      return sanitizeDriverLocation(LatLng(pos.latitude, pos.longitude));
+      }
+      return driverPos;
     } catch (_) {
-      return kColomboFort;
-    }
-  }
-
-  Future<void> _useColomboDemo() async {
-    setState(() {
-      forceColomboDemo = true;
-      driverPos = kColomboFort;
-      gpsLive = false;
-      followMe = true;
-      locationStatus =
-          'Colombo demo · ${kColomboFort.latitude}, ${kColomboFort.longitude}';
-    });
-    await _pushLocation(force: kColomboFort);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Location set to Colombo Fort — turn ONLINE to receive Sri Lanka rides',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      return driverPos;
     }
   }
 
@@ -346,14 +351,6 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
         online = me?['operationalStatus'] == 'ONLINE' ||
             me?['operationalStatus'] == 'BUSY' ||
             me?['operationalStatus'] == 'ON_TRIP';
-        // Do not overwrite a live GPS fix with stale server coords
-        if (!gpsLive) {
-          final loc = me?['location'];
-          if (loc is Map) {
-            final p = latLngFrom(loc['latitude'], loc['longitude']);
-            if (p != null) driverPos = p;
-          }
-        }
       });
       if (online) {
         locationTimer?.cancel();
@@ -376,6 +373,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       final prevStatus = activeRide?['status']?.toString();
       setState(() {
         offers = (o['data'] as List?) ?? [];
+        if (offers.isNotEmpty &&
+            activeRide?['status']?.toString() == 'TRIP_COMPLETED') {
+          activeRide = null;
+        }
         final ad = a['data'];
         if (ad != null && ad is Map) {
           activeRide = Map<String, dynamic>.from(ad);
@@ -409,8 +410,11 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       return;
     }
 
+    final origin = driverPos;
+    if (origin == null) return;
+
     final key =
-        '${phase.name}|${driverPos.latitude.toStringAsFixed(4)},${driverPos.longitude.toStringAsFixed(4)}|'
+        '${phase.name}|${origin.latitude.toStringAsFixed(4)},${origin.longitude.toStringAsFixed(4)}|'
         '${dest.latitude.toStringAsFixed(4)},${dest.longitude.toStringAsFixed(4)}';
     // Throttle identical route lookups slightly
     if (key == lastRouteKey && routePoints.isNotEmpty) return;
@@ -420,7 +424,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       final api = ref.read(apiClientProvider);
       final res = await api.get(
         '/maps/directions'
-        '?originLat=${driverPos.latitude}&originLng=${driverPos.longitude}'
+        '?originLat=${origin.latitude}&originLng=${origin.longitude}'
         '&destLat=${dest.latitude}&destLng=${dest.longitude}',
       );
       final data = res['data'] is Map
@@ -439,7 +443,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       if (pts.length < 2) {
         pts
           ..clear()
-          ..add(driverPos)
+          ..add(origin)
           ..add(dest);
       }
       if (!mounted) return;
@@ -448,13 +452,17 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
         routeDistanceText = data['distanceText']?.toString();
         routeDurationText = data['durationText']?.toString();
         routeProvider = data['provider']?.toString();
+        final dm = data['distanceMeters'];
+        final ds = data['durationSeconds'];
+        routeDistanceMeters = dm is num ? dm.round() : int.tryParse('$dm');
+        routeDurationSeconds = ds is num ? ds.round() : int.tryParse('$ds');
         lastRouteKey = key;
         routeLoading = false;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        routePoints = [driverPos, dest];
+        routePoints = [origin, dest];
         routeLoading = false;
         message = 'Route unavailable — showing straight line';
       });
@@ -466,12 +474,14 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     try {
       final api = ref.read(apiClientProvider);
       await api.post('/drivers/me/online', {'online': value});
-      // Always report Colombo-sanitized location for dispatch
-      final pos = forceColomboDemo
-          ? kColomboFort
-          : sanitizeDriverLocation(
-              (await _readGps()) ?? driverPos,
-            );
+      final pos = await _readGps();
+      if (pos == null) {
+        setState(() {
+          loading = false;
+          message = 'Need live GPS to go online';
+        });
+        return;
+      }
       setState(() => driverPos = pos);
       await api.post('/drivers/me/location', {
         'latitude': pos.latitude,
@@ -490,8 +500,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'Online near ${pos.latitude.toStringAsFixed(3)}, '
-                '${pos.longitude.toStringAsFixed(3)} — ready for Colombo rides',
+                'Online at ${pos.latitude.toStringAsFixed(5)}, '
+                '${pos.longitude.toStringAsFixed(5)}',
               ),
               behavior: SnackBarBehavior.floating,
             ),
@@ -509,12 +519,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
 
   Future<void> _pushLocation({LatLng? force}) async {
     try {
-      final pos = sanitizeDriverLocation(
-        force ??
-            (forceColomboDemo
-                ? kColomboFort
-                : ((await _readGps()) ?? driverPos)),
-      );
+      final pos = force ?? (await _readGps());
+      if (pos == null) return;
       if (mounted) {
         setState(() => driverPos = pos);
       }
@@ -524,23 +530,209 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
         'longitude': pos.longitude,
         if (driverHeading != null) 'heading': driverHeading,
       });
-      if (phase == _NavPhase.toPickup || phase == _NavPhase.toDropoff) {
-        if ((DateTime.now().second % 20) < 5) {
-          lastRouteKey = null;
-          await _refreshRoute();
-        }
+      if (phase == _NavPhase.toPickup ||
+          phase == _NavPhase.atPickup ||
+          phase == _NavPhase.toDropoff) {
+        await _maybeReroute();
       }
     } catch (_) {}
   }
 
-  Future<void> _recenterOnMe() async {
-    setState(() => followMe = true);
-    if (forceColomboDemo) {
-      setState(() => driverPos = kColomboFort);
+  String _fmtDistance(double meters) {
+    if (meters >= 1000) return '${(meters / 1000).toStringAsFixed(1)} km';
+    return '${meters.round()} m';
+  }
+
+  String _fmtDuration(int seconds) {
+    final mins = (seconds / 60).ceil().clamp(1, 999);
+    return '$mins min';
+  }
+
+  void _advanceAlongRoute(LatLng here) {
+    if (!navigating || routePoints.length < 2) return;
+    var nearest = 0;
+    var best = double.infinity;
+    for (var i = 0; i < routePoints.length; i++) {
+      final d = Geolocator.distanceBetween(
+        here.latitude,
+        here.longitude,
+        routePoints[i].latitude,
+        routePoints[i].longitude,
+      );
+      if (d < best) {
+        best = d;
+        nearest = i;
+      }
+    }
+
+    final dest = navDestination;
+    final skip = best < 18 ? nearest + 1 : nearest;
+    final remaining = <LatLng>[
+      here,
+      ...routePoints.skip(skip.clamp(0, routePoints.length)),
+    ];
+    if (dest != null &&
+        (remaining.length < 2 || remaining.last != dest)) {
+      remaining.add(dest);
+    }
+
+    double meters = 0;
+    for (var i = 1; i < remaining.length; i++) {
+      meters += Geolocator.distanceBetween(
+        remaining[i - 1].latitude,
+        remaining[i - 1].longitude,
+        remaining[i].latitude,
+        remaining[i].longitude,
+      );
+    }
+
+    if (!mounted) return;
+    setState(() {
+      routePoints = remaining.length >= 2
+          ? remaining
+          : (dest != null ? [here, dest] : remaining);
+      if (meters > 0) {
+        routeDistanceText = _fmtDistance(meters);
+        final fullM = routeDistanceMeters;
+        final fullS = routeDurationSeconds;
+        if (fullM != null && fullM > 0 && fullS != null) {
+          routeDurationText =
+              _fmtDuration((fullS * (meters / fullM)).round());
+        }
+      }
+    });
+
+    if (best > 90) {
+      _maybeReroute();
+    }
+  }
+
+  Future<void> _maybeReroute({bool force = false}) async {
+    if (!navigating && !force) return;
+    final now = DateTime.now();
+    if (!force &&
+        lastRerouteAt != null &&
+        now.difference(lastRerouteAt!) < const Duration(seconds: 12)) {
       return;
     }
-    if (!gpsLive) {
+    lastRerouteAt = now;
+    lastRouteKey = null;
+    await _refreshRoute();
+  }
+
+  Future<void> _beginInAppNavigation() async {
+    if (!mounted) return;
+    setState(() {
+      navigating = true;
+      followMe = true;
+    });
+    lastRouteKey = null;
+    await _startLiveLocation();
+    await _refreshRoute();
+  }
+
+  Future<void> _openGoogleNavigation(LatLng dest) async {
+    final destQ = '${dest.latitude},${dest.longitude}';
+    final origin = driverPos;
+    final uris = <Uri>[
+      Uri.parse('google.navigation:q=$destQ&mode=d'),
+      if (origin != null)
+        Uri.parse(
+          'comgooglemaps://?saddr=${origin.latitude},${origin.longitude}&daddr=$destQ&directionsmode=driving',
+        ),
+      Uri.parse(
+        origin == null
+            ? 'https://www.google.com/maps/dir/?api=1'
+                '&destination=$destQ'
+                '&travelmode=driving'
+                '&dir_action=navigate'
+            : 'https://www.google.com/maps/dir/?api=1'
+                '&origin=${origin.latitude},${origin.longitude}'
+                '&destination=$destQ'
+                '&travelmode=driving'
+                '&dir_action=navigate',
+      ),
+    ];
+
+    for (final uri in uris) {
+      try {
+        final launched = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (launched) return;
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Could not open Google Maps. Install Google Maps and try again.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _navigateForPhase() async {
+    final dest = navDestination;
+    if (dest == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No pickup or drop-off location yet'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    await _beginInAppNavigation();
+  }
+
+  Future<void> _recenterOnMe() async {
+    setState(() {
+      followMe = true;
+      locationStatus = 'Getting GPS…';
+    });
+    if (!await _ensureLocationPermission()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(locationStatus ?? 'Turn on location permission'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: _safeLocationSettings(
+          timeLimit: const Duration(seconds: 15),
+          highAccuracy: true,
+        ),
+      );
+      if (!mounted) return;
+      _applyGpsFix(pos);
+    } catch (_) {
+      try {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null && mounted) {
+          _applyGpsFix(last);
+        } else if (mounted) {
+          setState(() => locationStatus = 'GPS timeout — try outdoors');
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() => locationStatus = 'GPS failed — enable Location');
+        }
+      }
+    }
+    if (gpsPollTimer == null) {
       await _startLiveLocation();
+    }
+    if (navigating) {
+      await _beginInAppNavigation();
     }
   }
 
@@ -551,11 +743,13 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       setState(() {
         activeRide = Map<String, dynamic>.from(res['data'] as Map);
         offers = [];
-        message = 'Accepted — navigate to passenger';
+        message = 'Accepted — in-app navigation to pickup';
         lastRouteKey = null;
+        navigating = true;
+        followMe = true;
       });
       await _pushLocation();
-      await _refreshRoute();
+      await _beginInAppNavigation();
     } catch (e) {
       setState(() => message = e.toString());
     }
@@ -568,7 +762,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       final res = await api.post('/rides/${activeRide!['id']}/arrived');
       setState(() {
         activeRide = Map<String, dynamic>.from(res['data'] as Map);
-        message = 'Arrived at pickup';
+        message = 'Arrived at pickup — showing drop-off';
+        lastRouteKey = null;
+        navigating = false;
       });
       await _refreshRoute();
     } catch (e) {
@@ -585,10 +781,12 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       });
       setState(() {
         activeRide = Map<String, dynamic>.from(res['data'] as Map);
-        message = 'Trip started — navigate to drop-off';
+        message = 'Trip started — live navigation to drop-off';
         lastRouteKey = null;
+        navigating = true;
+        followMe = true;
       });
-      await _refreshRoute();
+      await _beginInAppNavigation();
     } catch (e) {
       setState(() => message = e.toString());
     }
@@ -606,25 +804,31 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
         activeRide = {...completed, 'status': 'TRIP_COMPLETED'};
         message = 'Trip completed · LKR $fare';
         routePoints = [];
+        navigating = false;
+        followMe = true;
       });
 
       try {
         await api.post('/drivers/me/online', {'online': true});
-        await api.post('/drivers/me/location', {
-          'latitude': driverPos.latitude,
-          'longitude': driverPos.longitude,
-        });
+        final here = driverPos ?? await _readGps();
+        if (here != null) {
+          await api.post('/drivers/me/location', {
+            'latitude': here.latitude,
+            'longitude': here.longitude,
+          });
+        }
         setState(() => online = true);
         locationTimer?.cancel();
         locationTimer =
             Timer.periodic(const Duration(seconds: 5), (_) => _pushLocation());
-      } catch (_) {}
+      } catch (e) {
+        if (mounted) {
+          setState(() => message = 'Could not go back online: $e');
+        }
+      }
 
       readyTimer?.cancel();
-      readyTimer = Timer(const Duration(seconds: 3), () {
-        if (!mounted) return;
-        _readyForNextTrip();
-      });
+      if (mounted) await _readyForNextTrip();
     } catch (e) {
       setState(() => message = e.toString());
     }
@@ -639,6 +843,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       routeDistanceText = null;
       routeDurationText = null;
       lastRouteKey = null;
+      navigating = false;
+      followMe = true;
+      routeDistanceMeters = null;
+      routeDurationSeconds = null;
       message = online
           ? 'Ready for next request — waiting for offers…'
           : 'Go online to receive new requests';
@@ -666,26 +874,37 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     }
 
     return Scaffold(
+      backgroundColor: maxSand,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Full-screen live map
-          // Full-screen map (deferred mount)
           if (mapMounted)
             RideMap(
               driver: driverPos,
-              pickup: showActive ? pickupLatLng : offerPickup,
+              pickup: showActive
+                  ? (phase == _NavPhase.toPickup ? pickupLatLng : null)
+                  : offerPickup,
               dropoff: showActive
-                  ? dropoffLatLng
+                  ? ((phase == _NavPhase.atPickup ||
+                          phase == _NavPhase.toDropoff)
+                      ? dropoffLatLng
+                      : null)
                   : (phase == _NavPhase.idle ? offerDropoff : null),
               destination: navDestination,
               routePoints: routePoints,
               myLocationEnabled: false,
-              followDriver: followMe && routePoints.length < 2,
+              followDriver: followMe,
+              navigationMode: navigating && followMe,
               driverHeading: driverHeading,
-              routeColor: phase == _NavPhase.toDropoff
-                  ? const Color(0xFFC62828)
-                  : const Color(0xFF1565C0),
+              driverEmoji: driverEmoji,
+              passengerEmoji: (showActive && phase == _NavPhase.toPickup) ||
+                      (!showActive && offerPickup != null)
+                  ? '🧍'
+                  : null,
+              routeColor: (phase == _NavPhase.atPickup ||
+                      phase == _NavPhase.toDropoff)
+                  ? maxDropoff
+                  : maxForest,
               onMapCreated: (_) {
                 if (gpsPollTimer == null) {
                   Future.delayed(const Duration(milliseconds: 900), () {
@@ -699,206 +918,149 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
             )
           else
             const ColoredBox(
-              color: Color(0xFF1A2332),
+              color: maxForest,
               child: Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    CircularProgressIndicator(color: dAmber),
+                    CircularProgressIndicator(color: maxLime),
                     SizedBox(height: 12),
                     Text(
                       'Loading map…',
-                      style: TextStyle(color: Colors.white70),
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ],
                 ),
               ),
             ),
-
-          // Live GPS chip
           Positioned(
-            left: 12,
-            right: 12,
-            top: topPad + 72,
-            child: Row(
-              children: [
-                Flexible(
-                  child: Material(
-                    color: gpsLive
-                        ? const Color(0xFF1B5E20)
-                        : const Color(0xFF5D4037),
-                    borderRadius: BorderRadius.circular(20),
-                    elevation: 3,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            gpsLive ? Icons.gps_fixed : Icons.gps_not_fixed,
-                            size: 16,
-                            color: Colors.white,
-                          ),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              locationStatus ??
-                                  (gpsLive ? 'Live location' : 'No GPS yet'),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Material(
-                  color: Colors.white,
-                  shape: const CircleBorder(),
-                  elevation: 3,
-                  child: IconButton(
-                    tooltip: 'Recenter on me',
-                    onPressed: _recenterOnMe,
-                    icon: Icon(
-                      Icons.my_location,
-                      color: followMe ? dNavy : Colors.black45,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Material(
-                  color: forceColomboDemo ? dAmber : Colors.white,
-                  shape: const CircleBorder(),
-                  elevation: 3,
-                  child: IconButton(
-                    tooltip: 'Colombo demo location',
-                    onPressed: _useColomboDemo,
-                    icon: Icon(
-                      Icons.flag,
-                      color: forceColomboDemo ? dInk : dNavy,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Top bar
-          Positioned(
-            left: 12,
-            right: 12,
+            left: 16,
+            right: 16,
             top: topPad + 8,
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Material(
-                    color: dNavy,
-                    borderRadius: BorderRadius.circular(14),
-                    elevation: 4,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'MaX Driver',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 12,
-                            ),
-                          ),
-                          Text(
-                            navTitle,
-                            style: TextStyle(
-                              color: online ? dAmber : Colors.white,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 15,
-                            ),
-                          ),
-                          if (routeDistanceText != null ||
-                              routeDurationText != null)
-                            Text(
-                              [
-                                if (routeDurationText != null)
-                                  routeDurationText!,
-                                if (routeDistanceText != null)
-                                  routeDistanceText!,
-                                if (routeProvider == 'GOOGLE_DIRECTIONS')
-                                  'Google',
-                              ].join(' · '),
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 12,
+                  child: DriverGlassCard(
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: online ? maxPickup : maxMuted,
+                                shape: BoxShape.circle,
                               ),
                             ),
-                          if (routeLoading)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 4),
-                              child: LinearProgressIndicator(minHeight: 2),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'MaX Driver',
+                              style: TextStyle(
+                                color: maxMuted,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
-                        ],
-                      ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          navTitle,
+                          style: const TextStyle(
+                            color: maxInk,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 15,
+                            letterSpacing: -0.2,
+                          ),
+                        ),
+                        if (routeDistanceText != null ||
+                            routeDurationText != null)
+                          Text(
+                            [
+                              if (routeDurationText != null) routeDurationText!,
+                              if (routeDistanceText != null) routeDistanceText!,
+                              if (navigating) 'Live',
+                            ].join(' · '),
+                            style: const TextStyle(
+                              color: maxMuted,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        if (routeLoading)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 6),
+                            child: LinearProgressIndicator(
+                              minHeight: 2,
+                              color: maxForest,
+                            ),
+                          ),
+                      ],
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                _chipIcon(Icons.badge_outlined, () => context.push('/onboarding')),
-                const SizedBox(width: 6),
-                _chipIcon(Icons.account_balance_wallet_outlined,
-                    () => context.push('/earnings')),
+                DriverCircleButton(
+                  icon: Icons.badge_outlined,
+                  tooltip: 'Driver profile',
+                  onTap: () => context.push('/onboarding'),
+                ),
+                const SizedBox(width: 8),
+                DriverCircleButton(
+                  icon: Icons.account_balance_wallet_outlined,
+                  tooltip: 'Earnings',
+                  onTap: () => context.push('/earnings'),
+                ),
               ],
             ),
           ),
-
-          // Bottom panel
+          Positioned(
+            right: 16,
+            bottom: MediaQuery.sizeOf(context).height * 0.42 + 16,
+            child: Column(
+              children: [
+                DriverCircleButton(
+                  icon: Icons.my_location_rounded,
+                  tooltip: 'Recenter on me',
+                  emphasized: followMe,
+                  onTap: _recenterOnMe,
+                ),
+              ],
+            ),
+          ),
           Align(
             alignment: Alignment.bottomCenter,
-            child: Material(
-              color: Colors.white,
-              elevation: 16,
-              borderRadius:
-                  const BorderRadius.vertical(top: Radius.circular(22)),
+            child: Container(
+              decoration: const BoxDecoration(
+                color: maxSurface,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                boxShadow: maxShadowSoft,
+              ),
               child: SafeArea(
                 top: false,
                 child: ConstrainedBox(
                   constraints: BoxConstraints(
-                    maxHeight: MediaQuery.sizeOf(context).height * 0.46,
+                    maxHeight: MediaQuery.sizeOf(context).height * 0.44,
                   ),
                   child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                    padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Center(
-                          child: Container(
-                            width: 40,
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: Colors.black26,
-                              borderRadius: BorderRadius.circular(99),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        // Online toggle
+                        const DriverSheetHandle(),
+                        const SizedBox(height: 14),
                         Container(
-                          padding: const EdgeInsets.all(14),
+                          padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
                           decoration: BoxDecoration(
-                            color: dNavy,
-                            borderRadius: BorderRadius.circular(14),
+                            color: online ? maxForest : maxSand,
+                            borderRadius: BorderRadius.circular(18),
                           ),
                           child: Row(
                             children: [
@@ -907,156 +1069,236 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      online ? 'ONLINE' : 'OFFLINE',
+                                      online ? "You're online" : "You're offline",
                                       style: TextStyle(
-                                        color: online ? dAmber : Colors.white,
-                                        fontSize: 20,
+                                        color: online ? Colors.white : maxInk,
+                                        fontSize: 17,
                                         fontWeight: FontWeight.w800,
                                       ),
                                     ),
+                                    const SizedBox(height: 2),
                                     Text(
-                                      'Approval: $status',
-                                      style: const TextStyle(
-                                        color: Colors.white54,
+                                      status == 'APPROVED'
+                                          ? 'Approved to drive'
+                                          : status.replaceAll('_', ' '),
+                                      style: TextStyle(
+                                        color: online
+                                            ? Colors.white.withValues(alpha: 0.75)
+                                            : maxMuted,
                                         fontSize: 12,
+                                        fontWeight: FontWeight.w600,
                                       ),
                                     ),
                                   ],
                                 ),
                               ),
-                              Switch(
-                                value: online,
-                                activeThumbColor: dAmber,
-                                onChanged: loading ? null : _toggleOnline,
+                              Semantics(
+                                label: online ? 'Go offline' : 'Go online',
+                                toggled: online,
+                                child: Switch(
+                                  value: online,
+                                  activeThumbColor: maxLime,
+                                  activeTrackColor:
+                                      maxLime.withValues(alpha: 0.35),
+                                  onChanged: loading ? null : _toggleOnline,
+                                ),
                               ),
                             ],
                           ),
                         ),
-                        const SizedBox(height: 12),
-                        if (!showActive) ...[
-                          const Text(
-                            'Incoming requests',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 16,
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Icon(
+                              gpsLive
+                                  ? Icons.gps_fixed_rounded
+                                  : Icons.gps_not_fixed_rounded,
+                              size: 16,
+                              color: gpsLive ? maxPickup : maxMuted,
                             ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            forceColomboDemo
-                                ? 'Demo location: Colombo Fort (needed for Sri Lanka rides).'
-                                : 'GPS must be inside Sri Lanka to receive offers.',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
-                            ),
-                          ),
-                          TextButton.icon(
-                            onPressed: _useColomboDemo,
-                            icon: const Icon(Icons.place, size: 18),
-                            label: const Text('Use Colombo demo location'),
-                          ),
-                          const SizedBox(height: 4),
-                          if (offers.isEmpty)
-                            Text(
-                              online
-                                  ? 'No pending offers — stay online near Colombo'
-                                  : 'Go online to receive passenger requests',
-                              style: const TextStyle(color: Colors.black54),
-                            ),
-                          ...offers.map((o) {
-                            final m = o as Map;
-                            final ride = m['ride'] as Map?;
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 10),
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFF5F7FA),
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: Colors.black12),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                locationStatus ??
+                                    (gpsLive
+                                        ? 'Live GPS'
+                                        : 'Waiting for GPS'),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: maxMuted,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        if (!showActive) ...[
+                          if (offers.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
                               child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.trip_origin,
-                                          color: Color(0xFF2E7D32), size: 18),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: Text(
-                                          ride?['pickupAddress']?.toString() ??
-                                              'Pickup',
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.flag,
-                                          color: Color(0xFFC62828), size: 18),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: Text(
-                                          ride?['dropoffAddress']?.toString() ??
-                                              'Drop-off',
-                                        ),
-                                      ),
-                                    ],
+                                  Text(
+                                    driverEmoji,
+                                    style: const TextStyle(fontSize: 28),
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
-                                    'LKR ${ride?['estimatedFare']} · '
-                                    '${m['pickupDistanceMeters']} m away',
+                                    online
+                                        ? 'No requests yet'
+                                        : 'Go online to get rides',
                                     style: const TextStyle(
-                                      color: Colors.black54,
-                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 16,
                                     ),
                                   ),
-                                  const SizedBox(height: 10),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: ElevatedButton(
-                                      onPressed: () =>
-                                          _acceptOffer(m['id'].toString()),
-                                      child: const Text(
-                                        'Accept & navigate to pickup',
-                                      ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    online
+                                        ? 'Stay nearby. New offers appear here.'
+                                        : 'Turn on the switch above when you are ready to drive.',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: maxMuted,
+                                      height: 1.4,
                                     ),
+                                  ),
+                                  TextButton(
+                                    onPressed: _pollOffers,
+                                    child: const Text('Refresh'),
                                   ),
                                 ],
                               ),
-                            );
-                          }),
-                          TextButton(
-                            onPressed: _pollOffers,
-                            child: const Text('Refresh offers'),
-                          ),
+                            )
+                          else
+                            ...offers.map((o) {
+                              final m = o as Map;
+                              final ride = m['ride'] as Map?;
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 10),
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: maxSand,
+                                  borderRadius: BorderRadius.circular(18),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.radio_button_checked,
+                                          color: maxPickup,
+                                          size: 16,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            ride?['pickupAddress']?.toString() ??
+                                                'Pickup',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const Padding(
+                                      padding: EdgeInsets.only(left: 7, top: 2, bottom: 2),
+                                      child: SizedBox(
+                                        height: 10,
+                                        child: VerticalDivider(
+                                          color: maxLine,
+                                          thickness: 2,
+                                          width: 2,
+                                        ),
+                                      ),
+                                    ),
+                                    Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.flag_rounded,
+                                          color: maxDropoff,
+                                          size: 16,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            ride?['dropoffAddress']
+                                                    ?.toString() ??
+                                                'Drop-off',
+                                            style: const TextStyle(
+                                              color: maxMuted,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Text(
+                                      'LKR ${ride?['estimatedFare']} · '
+                                      '${m['pickupDistanceMeters']} m away',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color: maxForest,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: ElevatedButton(
+                                        onPressed: () =>
+                                            _acceptOffer(m['id'].toString()),
+                                        child: const Text('Accept ride'),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }),
                         ] else ...[
                           _phaseBanner(rideStatus),
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 10),
                           Text(
-                            '${activeRide!['pickupAddress']}\n→ ${activeRide!['dropoffAddress']}',
-                            style: const TextStyle(height: 1.35),
+                            phase == _NavPhase.toPickup
+                                ? activeRide!['pickupAddress']?.toString() ?? ''
+                                : (phase == _NavPhase.atPickup ||
+                                        phase == _NavPhase.toDropoff)
+                                    ? activeRide!['dropoffAddress']
+                                            ?.toString() ??
+                                        ''
+                                    : '${activeRide!['pickupAddress']}\n${activeRide!['dropoffAddress']}',
+                            style: const TextStyle(
+                              height: 1.35,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                           const SizedBox(height: 12),
                           if (rideStatus == 'DRIVER_ASSIGNED') ...[
                             ElevatedButton.icon(
-                              onPressed: _arrived,
-                              icon: const Icon(Icons.place),
-                              label: const Text("I've arrived at pickup"),
+                              onPressed: _navigateForPhase,
+                              icon: const Icon(Icons.navigation_rounded),
+                              label: Text(
+                                navigating
+                                    ? 'Recenter navigation'
+                                    : 'Go to pickup',
+                              ),
                             ),
                             const SizedBox(height: 8),
                             OutlinedButton(
+                              onPressed: _arrived,
+                              child: const Text("I've arrived"),
+                            ),
+                            TextButton(
                               onPressed: () {
-                                lastRouteKey = null;
-                                _refreshRoute();
+                                final dest = pickupLatLng;
+                                if (dest != null) _openGoogleNavigation(dest);
                               },
-                              child: const Text('Refresh directions'),
+                              child: const Text('Open in Google Maps'),
                             ),
                           ],
                           if (rideStatus == 'DRIVER_ARRIVED') ...[
@@ -1064,58 +1306,69 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
                               controller: pinCtrl,
                               keyboardType: TextInputType.number,
                               decoration: const InputDecoration(
-                                hintText: 'Passenger start PIN',
-                                isDense: true,
+                                labelText: 'Passenger PIN',
+                                hintText: '4-digit start PIN',
                               ),
                             ),
-                            const SizedBox(height: 8),
+                            const SizedBox(height: 10),
                             ElevatedButton.icon(
                               onPressed: _start,
-                              icon: const Icon(Icons.navigation),
-                              label: const Text('Start trip → drop-off map'),
+                              icon: const Icon(Icons.navigation_rounded),
+                              label: const Text('Start trip'),
                             ),
                           ],
                           if (rideStatus == 'TRIP_STARTED') ...[
                             ElevatedButton.icon(
-                              onPressed: _complete,
-                              icon: const Icon(Icons.flag),
-                              label: const Text('Complete trip at drop-off'),
+                              onPressed: _navigateForPhase,
+                              icon: const Icon(Icons.navigation_rounded),
+                              label: Text(
+                                navigating
+                                    ? 'Recenter navigation'
+                                    : 'Go to drop-off',
+                              ),
                             ),
                             const SizedBox(height: 8),
                             OutlinedButton(
+                              onPressed: _complete,
+                              child: const Text('Complete trip'),
+                            ),
+                            TextButton(
                               onPressed: () {
-                                lastRouteKey = null;
-                                _refreshRoute();
+                                final dest = dropoffLatLng;
+                                if (dest != null) _openGoogleNavigation(dest);
                               },
-                              child: const Text('Refresh drop-off directions'),
+                              child: const Text('Open in Google Maps'),
                             ),
                           ],
                           if (rideStatus == 'TRIP_COMPLETED') ...[
                             Text(
-                              'Fare · LKR ${activeRide!['finalFare']}\n'
-                              'Returning to requests…',
+                              'Fare · LKR ${activeRide!['finalFare']}',
                               style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                color: Colors.green,
-                                height: 1.4,
+                                fontWeight: FontWeight.w800,
+                                color: maxForest,
+                                fontSize: 16,
                               ),
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Ready for the next request.',
+                              style: TextStyle(color: maxMuted),
                             ),
                             const SizedBox(height: 12),
                             ElevatedButton(
                               onPressed: _readyForNextTrip,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: dAmber,
-                                foregroundColor: dInk,
-                              ),
-                              child: const Text('Ready for next request'),
+                              child: const Text('Find next ride'),
                             ),
                           ],
                         ],
                         if (message != null) ...[
-                          const SizedBox(height: 10),
+                          const SizedBox(height: 8),
                           Text(
                             message!,
-                            style: const TextStyle(color: Colors.black87),
+                            style: const TextStyle(
+                              color: maxMuted,
+                              height: 1.35,
+                            ),
                           ),
                         ],
                       ],
@@ -1131,57 +1384,71 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   }
 
   Widget _phaseBanner(String? rideStatus) {
-    Color bg;
     String label;
+    Color bg;
+    Color fg;
+    final canNavigate =
+        rideStatus == 'DRIVER_ASSIGNED' || rideStatus == 'TRIP_STARTED';
     switch (rideStatus) {
       case 'DRIVER_ASSIGNED':
-        bg = const Color(0xFF1565C0);
-        label = 'GO TO PICKUP';
+        bg = maxForest;
+        fg = Colors.white;
+        label = navigating ? 'Navigating to pickup' : 'Head to pickup';
         break;
       case 'DRIVER_ARRIVED':
-        bg = const Color(0xFF2E7D32);
-        label = 'WAIT FOR PIN';
+        bg = const Color(0x1A0F3D2E);
+        fg = maxForest;
+        label = 'Ask for the passenger PIN';
         break;
       case 'TRIP_STARTED':
-        bg = const Color(0xFFC62828);
-        label = 'GO TO DROP-OFF';
+        bg = maxForest;
+        fg = Colors.white;
+        label = navigating ? 'Navigating to drop-off' : 'Head to drop-off';
         break;
       case 'TRIP_COMPLETED':
-        bg = Colors.green.shade700;
-        label = 'COMPLETED';
+        bg = const Color(0x1A0F3D2E);
+        fg = maxForest;
+        label = 'Trip completed';
         break;
       default:
-        bg = dNavy;
-        label = rideStatus ?? '';
+        bg = maxSand;
+        fg = maxInk;
+        label = (rideStatus ?? '').replaceAll('_', ' ');
     }
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.w800,
-          letterSpacing: 0.5,
-        ),
-      ),
-    );
-  }
-
-  Widget _chipIcon(IconData icon, VoidCallback onTap) {
     return Material(
-      color: Colors.white,
-      shape: const CircleBorder(),
-      elevation: 3,
+      color: bg,
+      borderRadius: BorderRadius.circular(16),
       child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
+        onTap: canNavigate ? _navigateForPhase : null,
+        borderRadius: BorderRadius.circular(16),
         child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Icon(icon, size: 20, color: dInk),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              if (canNavigate) ...[
+                Icon(Icons.navigation_rounded, color: fg, size: 20),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: fg,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              if (canNavigate)
+                Text(
+                  navigating ? 'In app' : 'Start',
+                  style: TextStyle(
+                    color: fg.withValues(alpha: 0.75),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );

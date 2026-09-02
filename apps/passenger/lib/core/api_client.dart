@@ -1,17 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-/// Android emulator → 10.0.2.2 · Windows/Chrome → pass localhost via --dart-define
-const String kApiBaseUrl = String.fromEnvironment(
-  'API_BASE_URL',
-  defaultValue: 'http://10.0.2.2:4000/api/v1',
-);
-
-const String kWsUrl = String.fromEnvironment(
-  'WS_URL',
-  defaultValue: 'http://10.0.2.2:4000/realtime',
-);
+import 'dev_env.dart';
+export 'dev_env.dart' show kApiBaseUrl, kWsUrl;
 
 final apiClientProvider = Provider<ApiClient>((ref) => ApiClient());
 

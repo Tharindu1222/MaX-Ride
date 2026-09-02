@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { isInSriLanka } from '../../common/utils/geo.util';
 
 export type PlaceResult = {
   id: string;
@@ -284,6 +285,9 @@ export class MapsService {
 
     return (body.results || [])
       .filter((r) => r.geometry?.location)
+      .filter((r) =>
+        isInSriLanka(r.geometry!.location!.lat, r.geometry!.location!.lng),
+      )
       .slice(0, 15)
       .map((r) => ({
         id: r.place_id || `g-${r.geometry!.location!.lat}-${r.geometry!.location!.lng}`,
@@ -301,6 +305,7 @@ export class MapsService {
     const params = new URLSearchParams({
       latlng: `${lat},${lng}`,
       language: 'en',
+      region: 'lk',
       result_type: 'street_address|route|premise|point_of_interest|locality',
       key: this.apiKey,
     });

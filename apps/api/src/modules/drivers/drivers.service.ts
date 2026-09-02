@@ -7,12 +7,14 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { DriverApprovalStatus, DriverOperationalStatus } from '@prisma/client';
+import { DispatchService } from '../dispatch/dispatch.service';
 
 @Injectable()
 export class DriversService {
   constructor(
     private prisma: PrismaService,
     private redis: RedisService,
+    private dispatch: DispatchService,
   ) {}
 
   private async getDriverByUser(userId: string) {
@@ -190,24 +192,18 @@ export class DriversService {
       return updated;
     }
 
-    // Dispatch only matches drivers near Sri Lanka pickups (max ~20km).
-    // Emulators often report Google HQ (US) GPS — force Colombo demo seed.
-    const rawLat = driver.location
-      ? Number(driver.location.latitude)
-      : 6.9344;
-    const rawLng = driver.location
-      ? Number(driver.location.longitude)
-      : 79.8428;
-    const inLk = this.isInSriLanka(rawLat, rawLng);
-    const lat = inLk ? rawLat : 6.9344;
-    const lng = inLk ? rawLng : 79.8428;
-
-    await this.prisma.driverLocation.upsert({
-      where: { driverId: driver.id },
-      create: { driverId: driver.id, latitude: lat, longitude: lng },
-      update: { latitude: lat, longitude: lng },
-    });
-    await this.redis.geoAdd(driver.id, lng, lat);
+    // Dispatch matches drivers by live GEO. Wait for the app to POST /location.
+    if (driver.location) {
+      const lat = Number(driver.location.latitude);
+      const lng = Number(driver.location.longitude);
+      await this.prisma.driverLocation.upsert({
+        where: { driverId: driver.id },
+        create: { driverId: driver.id, latitude: lat, longitude: lng },
+        update: { latitude: lat, longitude: lng },
+      });
+      await this.redis.geoAdd(driver.id, lng, lat);
+    }
+    await this.dispatch.notifyDriverAvailable(driver.id);
 
     return updated;
   }
@@ -221,36 +217,18 @@ export class DriversService {
   ) {
     const driver = await this.getDriverByUser(userId);
 
-    // Ignore out-of-market GPS (e.g. emulator default Mountain View) so the
-    // driver stays matchable for Colombo rides.
-    let useLat = lat;
-    let useLng = lng;
-    if (!this.isInSriLanka(lat, lng)) {
-      const prev = driver.location;
-      if (
-        prev &&
-        this.isInSriLanka(Number(prev.latitude), Number(prev.longitude))
-      ) {
-        useLat = Number(prev.latitude);
-        useLng = Number(prev.longitude);
-      } else {
-        useLat = 6.9344;
-        useLng = 79.8428;
-      }
-    }
-
     const location = await this.prisma.driverLocation.upsert({
       where: { driverId: driver.id },
       create: {
         driverId: driver.id,
-        latitude: useLat,
-        longitude: useLng,
+        latitude: lat,
+        longitude: lng,
         heading,
         speedMps,
       },
       update: {
-        latitude: useLat,
-        longitude: useLng,
+        latitude: lat,
+        longitude: lng,
         heading,
         speedMps,
       },
@@ -266,15 +244,10 @@ export class DriversService {
       status === 'ON_TRIP' ||
       status === 'BUSY'
     ) {
-      await this.redis.geoAdd(driver.id, useLng, useLat);
+      await this.redis.geoAdd(driver.id, lng, lat);
     }
 
     return location;
-  }
-
-  /** Sri Lanka rough bounding box for demo dispatch. */
-  private isInSriLanka(lat: number, lng: number): boolean {
-    return lat >= 5.8 && lat <= 9.9 && lng >= 79.4 && lng <= 82.1;
   }
 
   async earnings(userId: string) {

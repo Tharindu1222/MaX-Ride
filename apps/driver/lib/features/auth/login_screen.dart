@@ -235,7 +235,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             fontWeight: FontWeight.w600,
                           ),
                           cursorColor: dGreen,
-                          decoration: _field('Mobile number'),
+                          decoration: _field('Mobile number').copyWith(
+                            labelText: 'Mobile number',
+                            floatingLabelBehavior: FloatingLabelBehavior.never,
+                          ),
                         ),
                         if (otpSent) ...[
                           const SizedBox(height: 12),

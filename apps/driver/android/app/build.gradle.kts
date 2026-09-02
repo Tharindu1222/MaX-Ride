@@ -52,6 +52,21 @@ if (mapsApiKey.isNotBlank()) {
         lp.writer().use { props.store(it, "Updated by MaX Ride maps key resolver") }
     }
 }
+fun writeMapsKeyXml(androidRoot: File, key: String) {
+    val file = androidRoot.resolve("app/src/main/res/values/google_maps_api.xml")
+    file.parentFile.mkdirs()
+    val escaped = key.replace("&", "&amp;").replace("<", "&lt;").replace("\"", "&quot;")
+    file.writeText(
+        """
+        |<?xml version="1.0" encoding="utf-8"?>
+        |<resources>
+        |    <string name="google_maps_api_key" translatable="false">$escaped</string>
+        |</resources>
+        |""".trimMargin() + "\n",
+    )
+}
+
+writeMapsKeyXml(rootProject.projectDir, mapsApiKey)
 if (mapsApiKey.isBlank()) {
     logger.warn("GOOGLE_MAPS_API_KEY is empty. Set it in apps/api/.env or environment.")
 } else {
