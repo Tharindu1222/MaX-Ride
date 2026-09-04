@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+:root {
+  --max-ink: #0b1a14;
+  --max-forest: #0f3d2e;
+  --max-lime: #c8f560;
+  --max-sand: #f2efe6;
+  --max-mist: #dfe8e2;
+  --max-coral: #e85d4c;
+}
+
+body {
+  background: var(--max-sand);
+  color: var(--max-ink);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  min-height: 100vh;
+}
+
+.font-display {
+  font-family: var(--font-display), Georgia, serif;
+}
