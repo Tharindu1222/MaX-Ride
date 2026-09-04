@@ -7,18 +7,25 @@ const _envApi = String.fromEnvironment('API_BASE_URL');
 late final String kApiBaseUrl;
 
 Future<void> initDevEndpoints() async {
-  if (_envApi.isNotEmpty) {
-    kApiBaseUrl = _envApi;
-    return;
+  var api = _envApi;
+  if (api.isEmpty) {
+    api = '${await _defaultOrigin()}/api/v1';
+  } else if (await isPhysicalAndroid()) {
+    // README / habit often passes 10.0.2.2 — that only works in the emulator.
+    // Physical USB devices need adb reverse + loopback (or a LAN IP dart-define).
+    api = api
+        .replaceAll('http://10.0.2.2:', 'http://127.0.0.1:')
+        .replaceAll('https://10.0.2.2:', 'https://127.0.0.1:');
   }
-  kApiBaseUrl = '${await _defaultOrigin()}/api/v1';
+  kApiBaseUrl = api;
+  debugPrint('MaX Ride API → $kApiBaseUrl');
 }
 
 Future<String> _defaultOrigin() async {
   if (kIsWeb) return 'http://localhost:4000';
   switch (defaultTargetPlatform) {
     case TargetPlatform.android:
-      // Emulator host loopback. Physical USB needs `adb reverse tcp:4000 tcp:4000`.
+      // Emulator host loopback. Physical USB: `adb reverse tcp:4000 tcp:4000`.
       if (await isPhysicalAndroid()) return 'http://127.0.0.1:4000';
       return 'http://10.0.2.2:4000';
     default:

@@ -9,14 +9,21 @@ late final String kApiBaseUrl;
 late final String kWsUrl;
 
 Future<void> initDevEndpoints() async {
-  if (_envApi.isNotEmpty) {
-    kApiBaseUrl = _envApi;
-    kWsUrl = _envWs.isNotEmpty ? _envWs : _wsFromApi(_envApi);
-    return;
+  var api = _envApi;
+  if (api.isEmpty) {
+    final origin = await _defaultOrigin();
+    api = '$origin/api/v1';
+    kWsUrl = _envWs.isNotEmpty ? _envWs : '$origin/realtime';
+  } else {
+    if (await isPhysicalAndroid()) {
+      api = api
+          .replaceAll('http://10.0.2.2:', 'http://127.0.0.1:')
+          .replaceAll('https://10.0.2.2:', 'https://127.0.0.1:');
+    }
+    kWsUrl = _envWs.isNotEmpty ? _envWs : _wsFromApi(api);
   }
-  final origin = await _defaultOrigin();
-  kApiBaseUrl = '$origin/api/v1';
-  kWsUrl = _envWs.isNotEmpty ? _envWs : '$origin/realtime';
+  kApiBaseUrl = api;
+  debugPrint('MaX Ride API → $kApiBaseUrl');
 }
 
 String _wsFromApi(String api) {

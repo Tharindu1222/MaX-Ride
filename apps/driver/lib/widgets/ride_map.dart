@@ -18,6 +18,19 @@ final CameraTargetBounds kSriLankaCameraBounds =
 /// Zoom 7 fills the island; users cannot zoom out to other countries.
 const MinMaxZoomPreference kSriLankaZoom = MinMaxZoomPreference(7, 21);
 
+bool isInSriLanka(LatLng p) {
+  return p.latitude >= kSriLankaBounds.southwest.latitude &&
+      p.latitude <= kSriLankaBounds.northeast.latitude &&
+      p.longitude >= kSriLankaBounds.southwest.longitude &&
+      p.longitude <= kSriLankaBounds.northeast.longitude;
+}
+
+/// Simulator GPS defaults to SF; keep the camera inside the Maps bounds or tiles go blank.
+LatLng cameraFocusOrColombo(LatLng? p) {
+  if (p != null && isInSriLanka(p)) return p;
+  return kColomboCenter;
+}
+
 bool get mapsSupported {
   if (kIsWeb) return true;
   switch (defaultTargetPlatform) {
@@ -253,13 +266,12 @@ class _RideMapState extends State<RideMap> {
   }
 
   CameraPosition get _initial {
-    final focus = widget.driver ??
-        widget.destination ??
-        widget.pickup ??
-        kColomboCenter;
+    final focus = cameraFocusOrColombo(
+      widget.driver ?? widget.destination ?? widget.pickup,
+    );
     return CameraPosition(
       target: focus,
-      zoom: 16,
+      zoom: focus == kColomboCenter && widget.driver == null ? 12 : 16,
       bearing: widget.driverHeading ?? 0,
     );
   }
@@ -292,6 +304,8 @@ class _RideMapState extends State<RideMap> {
     final c = _controller;
     final d = widget.driver;
     if (c == null || d == null || !widget.followDriver) return;
+    // Outside Sri Lanka (e.g. iOS Simulator default) — stay on Colombo tiles.
+    if (!isInSriLanka(d)) return;
     _programmaticCamera = true;
     try {
       if (widget.navigationMode) {
@@ -383,7 +397,8 @@ class _RideMapState extends State<RideMap> {
                   _followMe();
                 } else if (widget.routePoints.length >= 2) {
                   _fitRoute();
-                } else if (widget.driver != null) {
+                } else if (widget.driver != null &&
+                    isInSriLanka(widget.driver!)) {
                   c.moveCamera(
                     CameraUpdate.newLatLngZoom(widget.driver!, 15.5),
                   );
