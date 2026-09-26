@@ -15,13 +15,18 @@ Future<void> initDevEndpoints() async {
     api = '$origin/api/v1';
     kWsUrl = _envWs.isNotEmpty ? _envWs : '$origin/realtime';
   } else {
-    if (await isPhysicalAndroid()) {
-      api = api
-          .replaceAll('http://10.0.2.2:', 'http://127.0.0.1:')
-          .replaceAll('https://10.0.2.2:', 'https://127.0.0.1:');
-    }
     kWsUrl = _envWs.isNotEmpty ? _envWs : _wsFromApi(api);
   }
+
+  if (defaultTargetPlatform == TargetPlatform.android &&
+      await isPhysicalAndroid() &&
+      api.contains('10.0.2.2')) {
+    api = api
+        .replaceAll('http://10.0.2.2:', 'http://127.0.0.1:')
+        .replaceAll('https://10.0.2.2:', 'https://127.0.0.1:');
+    if (_envWs.isEmpty) kWsUrl = _wsFromApi(api);
+  }
+
   kApiBaseUrl = api;
   debugPrint('MaX Ride API → $kApiBaseUrl');
 }
@@ -55,7 +60,21 @@ Future<bool> isPhysicalDevice() async {
     final plugin = DeviceInfoPlugin();
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        return (await plugin.androidInfo).isPhysicalDevice;
+        final info = await plugin.androidInfo;
+        if (info.isPhysicalDevice) return true;
+        final blob =
+            '${info.fingerprint} ${info.model} ${info.product} ${info.hardware}'
+                .toLowerCase();
+        final emulatorHints = [
+          'generic',
+          'emulator',
+          'sdk_gphone',
+          'sdk_google',
+          'goldfish',
+          'ranchu',
+          'vbox',
+        ];
+        return !emulatorHints.any(blob.contains);
       case TargetPlatform.iOS:
         return (await plugin.iosInfo).isPhysicalDevice;
       default:

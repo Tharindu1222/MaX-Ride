@@ -19,7 +19,7 @@ import {
   generateStartPin,
   estimateDurationSeconds,
 } from '../../common/utils/geo.util';
-import { PaymentMethod, RideStatus } from '@prisma/client';
+import { PaymentMethod, RideStatus, ServiceType } from '@prisma/client';
 
 const VALID: Record<string, string[]> = {
   REQUESTED: ['SEARCHING', 'CANCELLED_BY_PASSENGER', 'CANCELLED_BY_SYSTEM'],
@@ -78,19 +78,57 @@ export class RidesService {
       pickupAddress: string;
       pickupLat: number;
       pickupLng: number;
-      dropoffAddress: string;
-      dropoffLat: number;
-      dropoffLng: number;
+      dropoffAddress?: string;
+      dropoffLat?: number;
+      dropoffLng?: number;
       paymentMethod: PaymentMethod;
       promoCode?: string;
       passengerNote?: string;
       idempotencyKey?: string;
+      serviceType?: ServiceType;
+      rentalPackageId?: string;
     },
   ) {
     const passenger = await this.prisma.passengerProfile.findUnique({
       where: { userId },
     });
     if (!passenger) throw new ForbiddenException('Not a passenger');
+
+    const serviceType = dto.serviceType ?? ServiceType.RIDE;
+    let vehicleCategoryId = dto.vehicleCategoryId;
+    let dropoffAddress = dto.dropoffAddress;
+    let dropoffLat = dto.dropoffLat;
+    let dropoffLng = dto.dropoffLng;
+
+    if (serviceType === ServiceType.RENTAL) {
+      if (!dto.rentalPackageId) {
+        throw new BadRequestException('rentalPackageId is required for RENTAL');
+      }
+      const pkg = await this.prisma.rentalPackage.findFirst({
+        where: { id: dto.rentalPackageId, isActive: true },
+      });
+      if (!pkg) throw new NotFoundException('Rental package not found');
+      if (pkg.vehicleCategoryId) vehicleCategoryId = pkg.vehicleCategoryId;
+      if (pkg.packageType !== 'FIXED_TRIP') {
+        dropoffAddress = dropoffAddress ?? dto.pickupAddress;
+        dropoffLat = dropoffLat ?? dto.pickupLat;
+        dropoffLng = dropoffLng ?? dto.pickupLng;
+      } else if (
+        dropoffAddress == null ||
+        dropoffLat == null ||
+        dropoffLng == null
+      ) {
+        throw new BadRequestException(
+          'pickup and dropoff are required for fixed-trip rentals',
+        );
+      }
+    } else if (
+      dropoffAddress == null ||
+      dropoffLat == null ||
+      dropoffLng == null
+    ) {
+      throw new BadRequestException('pickup and dropoff are required');
+    }
 
     const active = await this.prisma.ride.findFirst({
       where: {
@@ -117,12 +155,14 @@ export class RidesService {
     }
 
     const estimate = await this.pricing.estimate({
-      vehicleCategoryId: dto.vehicleCategoryId,
+      vehicleCategoryId,
       pickupLat: dto.pickupLat,
       pickupLng: dto.pickupLng,
-      dropoffLat: dto.dropoffLat,
-      dropoffLng: dto.dropoffLng,
+      dropoffLat,
+      dropoffLng,
       promoCode: dto.promoCode,
+      serviceType,
+      rentalPackageId: dto.rentalPackageId,
     });
 
     const pin = generateStartPin();
@@ -132,13 +172,15 @@ export class RidesService {
       data: {
         rideNumber: generateRideNumber(),
         passengerId: passenger.id,
-        vehicleCategoryId: dto.vehicleCategoryId,
+        vehicleCategoryId,
+        serviceType,
+        rentalPackageId: dto.rentalPackageId,
         pickupAddress: dto.pickupAddress,
         pickupLat: dto.pickupLat,
         pickupLng: dto.pickupLng,
-        dropoffAddress: dto.dropoffAddress,
-        dropoffLat: dto.dropoffLat,
-        dropoffLng: dto.dropoffLng,
+        dropoffAddress,
+        dropoffLat,
+        dropoffLng,
         status: RideStatus.REQUESTED,
         paymentMethod: dto.paymentMethod,
         estimatedDistanceMeters: estimate.estimatedDistanceMeters,
@@ -390,11 +432,13 @@ export class RidesService {
       });
     }
 
+    const dropLat = Number(ride.dropoffLat ?? ride.pickupLat);
+    const dropLng = Number(ride.dropoffLng ?? ride.pickupLng);
     const actualDistance = distanceMeters(
       Number(ride.pickupLat),
       Number(ride.pickupLng),
-      Number(ride.dropoffLat),
-      Number(ride.dropoffLng),
+      dropLat,
+      dropLng,
     );
     const duration = ride.tripStartedAt
       ? Math.round((Date.now() - ride.tripStartedAt.getTime()) / 1000)
@@ -405,6 +449,8 @@ export class RidesService {
       distanceMeters: actualDistance,
       durationSeconds: duration,
       promoCode: ride.promoCode || undefined,
+      serviceType: ride.serviceType,
+      rentalPackageId: ride.rentalPackageId || undefined,
     });
 
     await this.prisma.ride.update({

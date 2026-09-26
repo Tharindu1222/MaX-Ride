@@ -77,17 +77,89 @@ async function main() {
     });
 
     const existing = await prisma.pricingRule.findFirst({
-      where: { vehicleCategoryId: cat.id, isActive: true },
+      where: { vehicleCategoryId: cat.id, serviceType: 'RIDE', isActive: true },
     });
     if (!existing) {
       await prisma.pricingRule.create({
         data: {
           vehicleCategoryId: cat.id,
+          serviceType: 'RIDE',
           ...c.pricing,
           currency: 'LKR',
           surgeMultiplier: 1,
         },
       });
+    }
+
+    const intercity = await prisma.pricingRule.findFirst({
+      where: {
+        vehicleCategoryId: cat.id,
+        serviceType: 'INTERCITY',
+        isActive: true,
+      },
+    });
+    if (!intercity) {
+      await prisma.pricingRule.create({
+        data: {
+          vehicleCategoryId: cat.id,
+          serviceType: 'INTERCITY',
+          name: `${c.name} Intercity LKR`,
+          baseFare: c.pricing.baseFare * 1.5,
+          perKmFare: c.pricing.perKmFare * 1.25,
+          perMinuteFare: c.pricing.perMinuteFare,
+          bookingFee: c.pricing.bookingFee * 1.5,
+          minimumFare: c.pricing.minimumFare * 2,
+          waitingPerMinute: c.pricing.waitingPerMinute,
+          currency: 'LKR',
+          surgeMultiplier: 1,
+        },
+      });
+    }
+  }
+
+  const car = await prisma.vehicleCategory.findUnique({ where: { code: 'CAR' } });
+  if (car) {
+    const packages = [
+      {
+        name: '2 Hour City Rental',
+        packageType: 'HOURLY' as const,
+        durationHours: 2,
+        includedKm: 40,
+        price: 4500,
+        sortOrder: 1,
+      },
+      {
+        name: 'Full Day Rental',
+        packageType: 'DAILY' as const,
+        durationHours: 24,
+        includedKm: 150,
+        price: 12000,
+        sortOrder: 2,
+      },
+      {
+        name: 'Airport Fixed Transfer',
+        packageType: 'FIXED_TRIP' as const,
+        durationHours: null,
+        includedKm: 50,
+        price: 5500,
+        sortOrder: 3,
+      },
+    ];
+    for (const p of packages) {
+      const exists = await prisma.rentalPackage.findFirst({
+        where: { name: p.name },
+      });
+      if (!exists) {
+        await prisma.rentalPackage.create({
+          data: {
+            ...p,
+            vehicleCategoryId: car.id,
+            description: `${p.name} — MaX Ride package`,
+            currency: 'LKR',
+            isActive: true,
+          },
+        });
+      }
     }
   }
 

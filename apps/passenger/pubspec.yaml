@@ -29,4 +29,10 @@ dev_dependencies:
   flutter_lints: ^5.0.0
 
 flutter:
+  config:
+    enable-swift-package-manager: false
   uses-material-design: true
+  assets:
+    - assets/images/pcablogo.png
+    - assets/images/premier_hero_car.png
+    - assets/images/welcome_bg.png

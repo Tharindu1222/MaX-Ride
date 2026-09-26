@@ -1,0 +1,24 @@
+#!/bin/sh
+# Flutter 3.44 only strips xattrs from the signed binary. Xcode 26 codesign
+# rejects the bundle when the .framework directory still has FinderInfo /
+# File Provider attributes (common when the repo lives on Desktop / iCloud).
+target=""
+for arg in "$@"; do
+  target="$arg"
+done
+
+if [ -n "$target" ] && [ -e "$target" ]; then
+  bundle="$target"
+  case "$target" in
+    *.framework/*)
+      bundle="${target%/*}"
+      ;;
+  esac
+  if [ -d "$bundle" ]; then
+    xattr -cr "$bundle" 2>/dev/null || true
+  else
+    xattr -c "$target" 2>/dev/null || true
+  fi
+fi
+
+exec /usr/bin/codesign "$@"

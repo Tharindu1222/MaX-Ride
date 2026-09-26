@@ -14,7 +14,9 @@ import '../../widgets/ride_map.dart';
 enum PickTarget { pickup, dropoff }
 
 class HomeScreen extends ConsumerStatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.serviceType = 'RIDE'});
+
+  final String serviceType;
 
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
@@ -22,6 +24,8 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   List categories = [];
+  List packages = [];
+  Map<String, dynamic>? selectedPackage;
   Map<String, dynamic>? pickup;
   Map<String, dynamic>? dropoff;
   String? selectedCategoryId;
@@ -54,11 +58,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _physicalDevice = true;
   bool _didAutoLocate = false;
 
+  String get serviceType => widget.serviceType.toUpperCase();
+  bool get isRental => serviceType == 'RENTAL';
+  bool get needsDropoff {
+    if (!isRental) return true;
+    final t = selectedPackage?['packageType'] as String?;
+    return t == 'FIXED_TRIP';
+  }
+
   LatLng? get pickupLatLng => latLngFrom(pickup?['lat'], pickup?['lng']);
   LatLng? get dropoffLatLng => latLngFrom(dropoff?['lat'], dropoff?['lng']);
 
-  bool get canBook =>
-      pickup != null && dropoff != null && selectedCategoryId != null;
+  bool get canBook {
+    if (pickup == null || selectedCategoryId == null) return false;
+    if (isRental && selectedPackage == null) return false;
+    if (needsDropoff && dropoff == null) return false;
+    return true;
+  }
 
   void _toast(String message) {
     if (!mounted) return;
@@ -72,6 +88,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void initState() {
     super.initState();
     _loadCategories();
+    if (isRental) _loadPackages();
     _preloadPopular();
     isPhysicalDevice().then((v) {
       if (mounted) _physicalDevice = v;
@@ -90,12 +107,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Future<void> _loadCategories() async {
     try {
       final api = ref.read(apiClientProvider);
-      final cats = await api.get('/vehicle-categories');
+      final cats = await api.get(
+        '/vehicle-categories',
+        query: {'serviceType': isRental ? 'RIDE' : serviceType},
+      );
       if (!mounted) return;
       setState(() {
         categories = (cats['data'] as List?) ?? [];
         if (categories.isNotEmpty) {
           selectedCategoryId = categories.first['id'] as String?;
+        }
+      });
+    } catch (e) {
+      if (mounted) setState(() => error = e.toString());
+    }
+  }
+
+  Future<void> _loadPackages() async {
+    try {
+      final api = ref.read(apiClientProvider);
+      final res = await api.get('/rental-packages');
+      if (!mounted) return;
+      setState(() {
+        packages = (res['data'] as List?) ?? [];
+        if (packages.isNotEmpty) {
+          selectedPackage = Map<String, dynamic>.from(packages.first as Map);
+          final catId = selectedPackage?['vehicleCategoryId'] as String?;
+          if (catId != null) selectedCategoryId = catId;
         }
       });
     } catch (e) {
@@ -380,14 +418,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() => estimating = true);
     try {
       final api = ref.read(apiClientProvider);
-      final res = await api.post('/fares/estimate', {
+      final body = <String, dynamic>{
         'vehicleCategoryId': selectedCategoryId,
         'pickupLat': coordAsDouble(pickup!['lat']),
         'pickupLng': coordAsDouble(pickup!['lng']),
-        'dropoffLat': coordAsDouble(dropoff!['lat']),
-        'dropoffLng': coordAsDouble(dropoff!['lng']),
+        'serviceType': serviceType,
         if (promo.isNotEmpty) 'promoCode': promo,
-      });
+        if (isRental && selectedPackage != null)
+          'rentalPackageId': selectedPackage!['id'],
+      };
+      if (needsDropoff && dropoff != null) {
+        body['dropoffLat'] = coordAsDouble(dropoff!['lat']);
+        body['dropoffLng'] = coordAsDouble(dropoff!['lng']);
+      }
+      final res = await api.post('/fares/estimate', body);
       if (!mounted) return;
       setState(() {
         estimate = Map<String, dynamic>.from(res['data'] as Map);
@@ -408,17 +452,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
     try {
       final api = ref.read(apiClientProvider);
-      final res = await api.post('/rides', {
+      final body = <String, dynamic>{
         'vehicleCategoryId': selectedCategoryId,
         'pickupAddress': pickup!['address'] ?? pickup!['name'],
         'pickupLat': coordAsDouble(pickup!['lat']),
         'pickupLng': coordAsDouble(pickup!['lng']),
-        'dropoffAddress': dropoff!['address'] ?? dropoff!['name'],
-        'dropoffLat': coordAsDouble(dropoff!['lat']),
-        'dropoffLng': coordAsDouble(dropoff!['lng']),
         'paymentMethod': paymentMethod,
+        'serviceType': serviceType,
         if (promo.isNotEmpty) 'promoCode': promo,
-      });
+        if (isRental && selectedPackage != null)
+          'rentalPackageId': selectedPackage!['id'],
+      };
+      if (needsDropoff && dropoff != null) {
+        body['dropoffAddress'] = dropoff!['address'] ?? dropoff!['name'];
+        body['dropoffLat'] = coordAsDouble(dropoff!['lat']);
+        body['dropoffLng'] = coordAsDouble(dropoff!['lng']);
+      }
+      final res = await api.post('/rides', body);
       final ride = res['data'] as Map<String, dynamic>;
       if (!mounted) return;
       final pin = ride['startPin'];
@@ -454,8 +504,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       : 'Set drop-off here';
 
   String get _ctaHint {
+    if (isRental && selectedPackage == null) return 'Choose a package';
     if (pickup == null) return 'Choose pickup';
-    if (dropoff == null) return 'Choose drop-off';
+    if (needsDropoff && dropoff == null) return 'Choose drop-off';
+    if (selectedCategoryId == null) return 'Choose vehicle';
     return 'Ready to request';
   }
 
@@ -565,6 +617,56 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
                   child: Column(
                     children: [
+                      Row(
+                        children: [
+                          TextButton.icon(
+                            onPressed: () => context.go('/select'),
+                            icon: const Icon(Icons.grid_view_rounded, size: 18),
+                            label: Text(serviceType),
+                          ),
+                          const Spacer(),
+                        ],
+                      ),
+                      if (isRental) ...[
+                        SizedBox(
+                          height: 42,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: packages.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(width: 8),
+                            itemBuilder: (context, i) {
+                              final p =
+                                  Map<String, dynamic>.from(packages[i] as Map);
+                              final selected =
+                                  selectedPackage?['id'] == p['id'];
+                              return ChoiceChip(
+                                label: Text(
+                                  '${p['name']} · LKR ${p['price']}',
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                                selected: selected,
+                                onSelected: (_) {
+                                  setState(() {
+                                    selectedPackage = p;
+                                    final catId =
+                                        p['vehicleCategoryId'] as String?;
+                                    if (catId != null) {
+                                      selectedCategoryId = catId;
+                                    }
+                                    if (!needsDropoff) {
+                                      dropoff = null;
+                                      activeTarget = PickTarget.pickup;
+                                    }
+                                  });
+                                  _refreshEstimate();
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
                       _WhereRow(
                         selected: activeTarget == PickTarget.pickup,
                         color: maxPickup,
@@ -574,26 +676,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         empty: pickup == null,
                         onTap: () => _openTarget(PickTarget.pickup),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 13),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Container(
-                            width: 2,
-                            height: 10,
-                            color: maxLine,
+                      if (needsDropoff) ...[
+                        Padding(
+                          padding: const EdgeInsets.only(left: 13),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Container(
+                              width: 2,
+                              height: 10,
+                              color: maxLine,
+                            ),
                           ),
                         ),
-                      ),
-                      _WhereRow(
-                        selected: activeTarget == PickTarget.dropoff,
-                        color: maxDropoff,
-                        icon: Icons.flag_rounded,
-                        label: 'Drop-off',
-                        value: dropoff?['name']?.toString() ?? 'Where to?',
-                        empty: dropoff == null,
-                        onTap: () => _openTarget(PickTarget.dropoff),
-                      ),
+                        _WhereRow(
+                          selected: activeTarget == PickTarget.dropoff,
+                          color: maxDropoff,
+                          icon: Icons.flag_rounded,
+                          label: 'Drop-off',
+                          value: dropoff?['name']?.toString() ?? 'Where to?',
+                          empty: dropoff == null,
+                          onTap: () => _openTarget(PickTarget.dropoff),
+                        ),
+                      ],
                       if (showSearchPanel) ...[
                         const SizedBox(height: 10),
                         TextField(

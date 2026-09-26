@@ -18,6 +18,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool loading = false;
   String? message;
 
+  @override
+  void dispose() {
+    phoneCtrl.dispose();
+    otpCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> requestOtp() async {
     setState(() {
       loading = true;
@@ -59,7 +66,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         data['refreshToken'] as String,
       );
       if (!mounted) return;
-      context.go('/');
+      context.go('/select');
     } catch (e) {
       setState(() => message = e.toString());
     } finally {
@@ -70,125 +77,160 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [maxForest, Color(0xFF163A2F), maxInk],
+      backgroundColor: pcBlack,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: const Alignment(0, -0.55),
+                radius: 1.1,
+                colors: [
+                  pcWine.withValues(alpha: 0.28),
+                  pcBlack,
+                ],
+              ),
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Spacer(flex: 2),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: maxLime.withValues(alpha: 0.18),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: const Text(
-                    'Sri Lanka · LKR',
-                    style: TextStyle(
-                      color: maxLime,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: IconButton(
+                      onPressed: () => context.go('/welcome'),
+                      icon: Icon(
+                        Icons.arrow_back_ios_new_rounded,
+                        color: pcWhite.withValues(alpha: 0.85),
+                        size: 18,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'MaX Ride',
-                  style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -1.4,
-                        height: 1,
-                      ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  'Get a tuk, car, or van in a few taps.',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.78),
-                        height: 1.4,
-                        fontWeight: FontWeight.w500,
-                      ),
-                ),
-                const SizedBox(height: 36),
-                Container(
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
-                    color: maxSurface,
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: maxShadowSoft,
+                  const Spacer(flex: 1),
+                  Image.asset(
+                    'assets/images/pcablogo.png',
+                    height: 56,
+                    fit: BoxFit.contain,
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      TextField(
-                        controller: phoneCtrl,
-                        keyboardType: TextInputType.phone,
-                        style: const TextStyle(
-                          color: maxInk,
-                          fontWeight: FontWeight.w600,
+                  const SizedBox(height: 28),
+                  Text(
+                    'Continue with mobile',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: pcWhite.withValues(alpha: 0.95),
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.4,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'We’ll text you a one-time code.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: pcWhite.withValues(alpha: 0.55),
+                      fontSize: 14,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: pcWhite.withValues(alpha: 0.96),
+                      borderRadius: BorderRadius.circular(22),
+                      boxShadow: [
+                        BoxShadow(
+                          color: pcBlack.withValues(alpha: 0.35),
+                          blurRadius: 30,
+                          offset: const Offset(0, 16),
                         ),
-                        decoration: const InputDecoration(
-                          labelText: 'Mobile number',
-                          hintText: '+94 77 123 4567',
-                        ),
-                      ),
-                      if (otpSent) ...[
-                        const SizedBox(height: 12),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
                         TextField(
-                          controller: otpCtrl,
-                          keyboardType: TextInputType.number,
+                          controller: phoneCtrl,
+                          keyboardType: TextInputType.phone,
                           style: const TextStyle(
                             color: maxInk,
                             fontWeight: FontWeight.w600,
                           ),
                           decoration: const InputDecoration(
-                            labelText: 'One-time code',
-                            hintText: '6-digit code',
+                            labelText: 'Mobile number',
+                            hintText: '+94 77 123 4567',
+                          ),
+                        ),
+                        if (otpSent) ...[
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: otpCtrl,
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(
+                              color: maxInk,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            decoration: const InputDecoration(
+                              labelText: 'One-time code',
+                              hintText: '6-digit code',
+                            ),
+                          ),
+                        ],
+                        if (message != null) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            message!,
+                            style: TextStyle(
+                              color: pcWine.withValues(alpha: 0.95),
+                              fontWeight: FontWeight.w600,
+                              height: 1.35,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        ElevatedButton(
+                          onPressed: loading
+                              ? null
+                              : () => otpSent ? verifyOtp() : requestOtp(),
+                          style: ElevatedButton.styleFrom(
+                            minimumSize: const Size(48, 52),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                          ),
+                          child: Text(
+                            loading
+                                ? 'Please wait…'
+                                : otpSent
+                                    ? 'Verify & continue'
+                                    : 'Send code',
                           ),
                         ),
                       ],
-                      if (message != null) ...[
-                        const SizedBox(height: 12),
-                        Text(
-                          message!,
-                          style: const TextStyle(
-                            color: maxForest,
-                            fontWeight: FontWeight.w600,
-                            height: 1.35,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: loading
-                            ? null
-                            : () => otpSent ? verifyOtp() : requestOtp(),
-                        child: Text(
-                          loading
-                              ? 'Please wait…'
-                              : otpSent
-                                  ? 'Verify & continue'
-                                  : 'Send code',
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-                const Spacer(flex: 3),
-              ],
+                  const Spacer(flex: 2),
+                  Text(
+                    'Sri Lanka · LKR',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: pcWhite.withValues(alpha: 0.35),
+                      fontSize: 12,
+                      letterSpacing: 1.2,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }

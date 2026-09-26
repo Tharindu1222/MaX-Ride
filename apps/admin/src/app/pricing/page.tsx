@@ -22,7 +22,7 @@ export default function PricingPage() {
         {rules.map((r) => (
           <div key={r.id} className="bg-white/80 rounded-xl p-4">
             <p className="font-semibold">
-              {r.category?.name} · {r.name}
+              {r.category?.name} · {r.serviceType ?? "RIDE"} · {r.name}
             </p>
             <p className="text-sm text-black/60">
               Base {r.baseFare} · /km {r.perKmFare} · /min {r.perMinuteFare} · min{" "}

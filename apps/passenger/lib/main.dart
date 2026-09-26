@@ -1,21 +1,21 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
 import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
 import 'core/dev_env.dart';
 import 'core/theme.dart';
 import 'features/auth/login_screen.dart';
+import 'features/auth/welcome_screen.dart';
 import 'features/home/home_screen.dart';
+import 'features/home/service_select_screen.dart';
 import 'features/ride/active_ride_screen.dart';
 import 'features/history/history_screen.dart';
 import 'features/profile/profile_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  GoogleFonts.config.allowRuntimeFetching = false;
   await initDevEndpoints();
   await configureAndroidMaps();
   runApp(const ProviderScope(child: MaxRidePassengerApp()));
@@ -42,10 +42,21 @@ Future<void> configureAndroidMaps() async {
 
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
-    initialLocation: '/login',
+    initialLocation: '/welcome',
     routes: [
+      GoRoute(path: '/welcome', builder: (_, __) => const WelcomeScreen()),
       GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
-      GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
+      GoRoute(
+        path: '/select',
+        builder: (_, __) => const ServiceSelectScreen(),
+      ),
+      GoRoute(
+        path: '/',
+        builder: (context, state) {
+          final mode = state.uri.queryParameters['mode'] ?? 'RIDE';
+          return HomeScreen(serviceType: mode);
+        },
+      ),
       GoRoute(
         path: '/ride/:id',
         builder: (_, state) =>
@@ -64,9 +75,9 @@ class MaxRidePassengerApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(routerProvider);
     return MaterialApp.router(
-      title: 'MaX Ride',
+      title: 'Premier Cabs',
       debugShowCheckedModeBanner: false,
-      theme: buildMaxRideTheme(GoogleFonts.plusJakartaSansTextTheme()),
+      theme: buildMaxRideTheme(ThemeData(useMaterial3: true).textTheme),
       routerConfig: router,
     );
   }

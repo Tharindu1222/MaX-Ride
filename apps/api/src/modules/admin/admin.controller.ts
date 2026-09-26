@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  IsBoolean,
 } from 'class-validator';
 import { AdminService } from './admin.service';
 import { CurrentUser, AuthUser } from '../../common/decorators/current-user.decorator';
@@ -20,6 +21,8 @@ class ReviewDriverDto {
 class PricingDto {
   @IsOptional() @IsUUID() id?: string;
   @IsUUID() vehicleCategoryId!: string;
+  @IsOptional() @IsEnum(['RIDE', 'INTERCITY', 'RENTAL'] as const)
+  serviceType?: 'RIDE' | 'INTERCITY' | 'RENTAL';
   @IsString() name!: string;
   @IsNumber() baseFare!: number;
   @IsNumber() perKmFare!: number;
@@ -28,6 +31,20 @@ class PricingDto {
   @IsNumber() minimumFare!: number;
   @IsOptional() @IsNumber() waitingPerMinute?: number;
   @IsOptional() @IsNumber() surgeMultiplier?: number;
+}
+
+class PackageDto {
+  @IsOptional() @IsUUID() id?: string;
+  @IsString() name!: string;
+  @IsOptional() @IsString() description?: string;
+  @IsEnum(['HOURLY', 'DAILY', 'FIXED_TRIP'] as const)
+  packageType!: 'HOURLY' | 'DAILY' | 'FIXED_TRIP';
+  @IsOptional() @IsUUID() vehicleCategoryId?: string;
+  @IsOptional() @IsNumber() durationHours?: number;
+  @IsOptional() @IsNumber() includedKm?: number;
+  @IsNumber() price!: number;
+  @IsOptional() @IsNumber() sortOrder?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
 }
 
 class PromoDto {
@@ -97,6 +114,16 @@ export class AdminController {
   @Post('pricing')
   upsertPricing(@CurrentUser() user: AuthUser, @Body() dto: PricingDto) {
     return this.admin.upsertPricing(user.id, dto);
+  }
+
+  @Get('packages')
+  packages() {
+    return this.admin.listPackages();
+  }
+
+  @Post('packages')
+  upsertPackage(@CurrentUser() user: AuthUser, @Body() dto: PackageDto) {
+    return this.admin.upsertPackage(user.id, dto);
   }
 
   @Get('promos')

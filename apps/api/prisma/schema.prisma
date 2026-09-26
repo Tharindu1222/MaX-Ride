@@ -65,6 +65,18 @@ enum PaymentMethod {
   CARD
 }
 
+enum ServiceType {
+  RIDE
+  INTERCITY
+  RENTAL
+}
+
+enum RentalPackageType {
+  HOURLY
+  DAILY
+  FIXED_TRIP
+}
+
 enum PaymentStatus {
   PENDING
   AUTHORIZED
@@ -256,9 +268,10 @@ model VehicleCategory {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  vehicles     Vehicle[]
-  pricingRules PricingRule[]
-  rides        Ride[]
+  vehicles       Vehicle[]
+  pricingRules   PricingRule[]
+  rentalPackages RentalPackage[]
+  rides          Ride[]
 
   @@map("vehicle_categories")
 }
@@ -299,24 +312,48 @@ model VehicleDriverAssignment {
 }
 
 model PricingRule {
-  id                 String   @id @default(uuid()) @db.Uuid
-  vehicleCategoryId  String   @map("vehicle_category_id") @db.Uuid
-  name               String   @db.VarChar(80)
-  baseFare           Decimal  @map("base_fare") @db.Decimal(12, 2)
-  perKmFare          Decimal  @map("per_km_fare") @db.Decimal(12, 2)
-  perMinuteFare      Decimal  @map("per_minute_fare") @db.Decimal(12, 2)
-  bookingFee         Decimal  @default(0) @map("booking_fee") @db.Decimal(12, 2)
-  minimumFare        Decimal  @map("minimum_fare") @db.Decimal(12, 2)
-  waitingPerMinute   Decimal  @default(0) @map("waiting_per_minute") @db.Decimal(12, 2)
-  surgeMultiplier    Decimal  @default(1) @map("surge_multiplier") @db.Decimal(6, 2)
-  currency           String   @default("LKR") @db.VarChar(10)
-  isActive           Boolean  @default(true) @map("is_active")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  id                 String      @id @default(uuid()) @db.Uuid
+  vehicleCategoryId  String      @map("vehicle_category_id") @db.Uuid
+  serviceType        ServiceType @default(RIDE) @map("service_type")
+  name               String      @db.VarChar(80)
+  baseFare           Decimal     @map("base_fare") @db.Decimal(12, 2)
+  perKmFare          Decimal     @map("per_km_fare") @db.Decimal(12, 2)
+  perMinuteFare      Decimal     @map("per_minute_fare") @db.Decimal(12, 2)
+  bookingFee         Decimal     @default(0) @map("booking_fee") @db.Decimal(12, 2)
+  minimumFare        Decimal     @map("minimum_fare") @db.Decimal(12, 2)
+  waitingPerMinute   Decimal     @default(0) @map("waiting_per_minute") @db.Decimal(12, 2)
+  surgeMultiplier    Decimal     @default(1) @map("surge_multiplier") @db.Decimal(6, 2)
+  currency           String      @default("LKR") @db.VarChar(10)
+  isActive           Boolean     @default(true) @map("is_active")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
 
   category VehicleCategory @relation(fields: [vehicleCategoryId], references: [id])
 
+  @@index([vehicleCategoryId, serviceType, isActive])
   @@map("pricing_rules")
+}
+
+model RentalPackage {
+  id                String            @id @default(uuid()) @db.Uuid
+  name              String            @db.VarChar(120)
+  description       String?
+  packageType       RentalPackageType @map("package_type")
+  vehicleCategoryId String?           @map("vehicle_category_id") @db.Uuid
+  durationHours     Int?              @map("duration_hours")
+  includedKm        Int?              @map("included_km")
+  price             Decimal           @db.Decimal(12, 2)
+  currency          String            @default("LKR") @db.VarChar(10)
+  isActive          Boolean           @default(true) @map("is_active")
+  sortOrder         Int               @default(0) @map("sort_order")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  category VehicleCategory? @relation(fields: [vehicleCategoryId], references: [id])
+  rides    Ride[]
+
+  @@index([isActive, sortOrder])
+  @@map("rental_packages")
 }
 
 model Ride {
@@ -326,13 +363,15 @@ model Ride {
   driverId               String?       @map("driver_id") @db.Uuid
   vehicleId              String?       @map("vehicle_id") @db.Uuid
   vehicleCategoryId      String        @map("vehicle_category_id") @db.Uuid
+  serviceType            ServiceType   @default(RIDE) @map("service_type")
+  rentalPackageId        String?       @map("rental_package_id") @db.Uuid
 
   pickupAddress          String        @map("pickup_address")
   pickupLat              Decimal       @map("pickup_lat") @db.Decimal(10, 7)
   pickupLng              Decimal       @map("pickup_lng") @db.Decimal(10, 7)
-  dropoffAddress         String        @map("dropoff_address")
-  dropoffLat             Decimal       @map("dropoff_lat") @db.Decimal(10, 7)
-  dropoffLng             Decimal       @map("dropoff_lng") @db.Decimal(10, 7)
+  dropoffAddress         String?       @map("dropoff_address")
+  dropoffLat             Decimal?      @map("dropoff_lat") @db.Decimal(10, 7)
+  dropoffLng             Decimal?      @map("dropoff_lng") @db.Decimal(10, 7)
 
   status                 RideStatus
   paymentMethod          PaymentMethod @map("payment_method")
@@ -369,6 +408,7 @@ model Ride {
   driver        DriverProfile?     @relation("DriverRides", fields: [driverId], references: [id])
   vehicle       Vehicle?           @relation(fields: [vehicleId], references: [id])
   category      VehicleCategory    @relation(fields: [vehicleCategoryId], references: [id])
+  rentalPackage RentalPackage?     @relation(fields: [rentalPackageId], references: [id])
   statusHistory RideStatusHistory[]
   offers        RideDriverOffer[]
   payments      Payment[]
@@ -378,6 +418,7 @@ model Ride {
   @@index([passengerId, createdAt(sort: Desc)])
   @@index([driverId, createdAt(sort: Desc)])
   @@index([status])
+  @@index([serviceType])
   @@map("rides")
 }
 

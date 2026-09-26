@@ -11,20 +11,22 @@ import {
 } from 'class-validator';
 import { RidesService } from './rides.service';
 import { CurrentUser, AuthUser } from '../../common/decorators/current-user.decorator';
-import { PaymentMethod } from '@prisma/client';
+import { PaymentMethod, ServiceType } from '@prisma/client';
 
 class RequestRideDto {
   @IsUUID() vehicleCategoryId!: string;
   @IsString() pickupAddress!: string;
   @IsNumber() pickupLat!: number;
   @IsNumber() pickupLng!: number;
-  @IsString() dropoffAddress!: string;
-  @IsNumber() dropoffLat!: number;
-  @IsNumber() dropoffLng!: number;
+  @IsOptional() @IsString() dropoffAddress?: string;
+  @IsOptional() @IsNumber() dropoffLat?: number;
+  @IsOptional() @IsNumber() dropoffLng?: number;
   @IsEnum(PaymentMethod) paymentMethod!: PaymentMethod;
   @IsOptional() @IsString() promoCode?: string;
   @IsOptional() @IsString() passengerNote?: string;
   @IsOptional() @IsString() idempotencyKey?: string;
+  @IsOptional() @IsEnum(ServiceType) serviceType?: ServiceType;
+  @IsOptional() @IsUUID() rentalPackageId?: string;
 }
 
 class PinDto {

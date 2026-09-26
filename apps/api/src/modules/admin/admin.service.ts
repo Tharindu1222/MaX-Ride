@@ -160,6 +160,7 @@ export class AdminService {
     data: {
       id?: string;
       vehicleCategoryId: string;
+      serviceType?: 'RIDE' | 'INTERCITY' | 'RENTAL';
       name: string;
       baseFare: number;
       perKmFare: number;
@@ -172,6 +173,7 @@ export class AdminService {
   ) {
     const payload = {
       vehicleCategoryId: data.vehicleCategoryId,
+      serviceType: data.serviceType ?? 'RIDE',
       name: data.name,
       baseFare: data.baseFare,
       perKmFare: data.perKmFare,
@@ -197,6 +199,52 @@ export class AdminService {
       include: { category: true },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  listPackages() {
+    return this.prisma.rentalPackage.findMany({
+      include: { category: true },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
+    });
+  }
+
+  async upsertPackage(
+    adminId: string,
+    data: {
+      id?: string;
+      name: string;
+      description?: string;
+      packageType: 'HOURLY' | 'DAILY' | 'FIXED_TRIP';
+      vehicleCategoryId?: string;
+      durationHours?: number;
+      includedKm?: number;
+      price: number;
+      sortOrder?: number;
+      isActive?: boolean;
+    },
+  ) {
+    const payload = {
+      name: data.name,
+      description: data.description,
+      packageType: data.packageType,
+      vehicleCategoryId: data.vehicleCategoryId || null,
+      durationHours: data.durationHours ?? null,
+      includedKm: data.includedKm ?? null,
+      price: data.price,
+      sortOrder: data.sortOrder ?? 0,
+      isActive: data.isActive ?? true,
+      currency: 'LKR',
+    };
+
+    const pkg = data.id
+      ? await this.prisma.rentalPackage.update({
+          where: { id: data.id },
+          data: payload,
+        })
+      : await this.prisma.rentalPackage.create({ data: payload });
+
+    await this.audit.log(adminId, 'PACKAGE_UPSERT', 'RentalPackage', pkg.id, data);
+    return pkg;
   }
 
   async upsertPromo(

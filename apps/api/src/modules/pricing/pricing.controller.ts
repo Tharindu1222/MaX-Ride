@@ -1,8 +1,15 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsNumber, IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+} from 'class-validator';
 import { PricingService } from './pricing.service';
 import { Public } from '../../common/decorators/roles.decorator';
+import { ServiceType } from '@prisma/client';
 
 class EstimateDto {
   @IsUUID()
@@ -14,15 +21,25 @@ class EstimateDto {
   @IsNumber()
   pickupLng!: number;
 
+  @IsOptional()
   @IsNumber()
-  dropoffLat!: number;
+  dropoffLat?: number;
 
+  @IsOptional()
   @IsNumber()
-  dropoffLng!: number;
+  dropoffLng?: number;
 
   @IsOptional()
   @IsString()
   promoCode?: string;
+
+  @IsOptional()
+  @IsEnum(ServiceType)
+  serviceType?: ServiceType;
+
+  @IsOptional()
+  @IsUUID()
+  rentalPackageId?: string;
 }
 
 @ApiTags('pricing')
@@ -33,8 +50,14 @@ export class PricingController {
 
   @Public()
   @Get('vehicle-categories')
-  categories() {
-    return this.pricing.listCategories();
+  categories(@Query('serviceType') serviceType?: ServiceType) {
+    return this.pricing.listCategories(serviceType ?? ServiceType.RIDE);
+  }
+
+  @Public()
+  @Get('rental-packages')
+  rentalPackages() {
+    return this.pricing.listRentalPackages();
   }
 
   @Post('fares/estimate')

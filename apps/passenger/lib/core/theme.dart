@@ -1,19 +1,24 @@
 import 'package:flutter/material.dart';
 
-const Color maxInk = Color(0xFF0B1F1A);
-const Color maxForest = Color(0xFF0F3D2E);
+const Color pcWine = Color(0xFF861619);
+const Color pcBlack = Color(0xFF0B0B0D);
+const Color pcGray = Color(0xFF9A9A9A);
+const Color pcWhite = Color(0xFFFFFFFF);
+
+const Color maxInk = pcBlack;
+const Color maxForest = pcWine;
 const Color maxLime = Color(0xFFC8F560);
-const Color maxSand = Color(0xFFF6F3EC);
+const Color maxSand = Color(0xFFF4F4F5);
 const Color maxTeal = Color(0xFF1FA89A);
-const Color maxSurface = Color(0xFFFFFFFF);
-const Color maxMuted = Color(0xFF5C6B66);
-const Color maxLine = Color(0x1A0B1F1A);
+const Color maxSurface = pcWhite;
+const Color maxMuted = pcGray;
+const Color maxLine = Color(0x1A0B0B0D);
 const Color maxPickup = Color(0xFF1B7A4A);
-const Color maxDropoff = Color(0xFFC62828);
+const Color maxDropoff = pcWine;
 
 const List<BoxShadow> maxShadowSoft = [
   BoxShadow(
-    color: Color(0x140B1F1A),
+    color: Color(0x140B0B0D),
     blurRadius: 28,
     offset: Offset(0, 10),
   ),
@@ -21,7 +26,7 @@ const List<BoxShadow> maxShadowSoft = [
 
 const List<BoxShadow> maxShadowFloat = [
   BoxShadow(
-    color: Color(0x1F0B1F1A),
+    color: Color(0x1F0B0B0D),
     blurRadius: 20,
     offset: Offset(0, 6),
   ),
@@ -33,11 +38,11 @@ ThemeData buildMaxRideTheme(TextTheme textTheme) {
     brightness: Brightness.light,
     scaffoldBackgroundColor: maxSand,
     colorScheme: ColorScheme.fromSeed(
-      seedColor: maxForest,
-      primary: maxForest,
-      secondary: maxLime,
+      seedColor: pcWine,
+      primary: pcWine,
+      secondary: pcGray,
       surface: maxSurface,
-      onPrimary: Colors.white,
+      onPrimary: pcWhite,
       onSurface: maxInk,
       brightness: Brightness.light,
     ),
@@ -63,14 +68,17 @@ ThemeData buildMaxRideTheme(TextTheme textTheme) {
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
       backgroundColor: maxInk,
-      contentTextStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+      contentTextStyle: const TextStyle(
+        color: pcWhite,
+        fontWeight: FontWeight.w600,
+      ),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
-        backgroundColor: maxForest,
-        foregroundColor: Colors.white,
-        disabledBackgroundColor: const Color(0xFFE4EAE7),
+        backgroundColor: pcWine,
+        foregroundColor: pcWhite,
+        disabledBackgroundColor: const Color(0xFFE4E4E7),
         disabledForegroundColor: maxMuted,
         elevation: 0,
         minimumSize: const Size(48, 52),
@@ -81,16 +89,16 @@ ThemeData buildMaxRideTheme(TextTheme textTheme) {
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
-        foregroundColor: maxForest,
+        foregroundColor: pcWine,
         minimumSize: const Size(48, 52),
-        side: const BorderSide(color: Color(0x330F3D2E)),
+        side: const BorderSide(color: Color(0x33861619)),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
-        foregroundColor: maxForest,
+        foregroundColor: pcWine,
         textStyle: const TextStyle(fontWeight: FontWeight.w700),
       ),
     ),
@@ -108,7 +116,7 @@ ThemeData buildMaxRideTheme(TextTheme textTheme) {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: maxForest, width: 1.4),
+        borderSide: const BorderSide(color: pcWine, width: 1.4),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
     ),
